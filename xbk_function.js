@@ -23,7 +23,11 @@ if (!config.domin || !config.domin.startsWith('http')) {
     throw new Error('配置错误：domin 必须是合法的 HTTP URL'); 
 }
 
-if (config.pingbitime && isNaN(Number(config.pingbitime)) && !config.pingbitime.includes('###')) { 
+if (
+    config.pingbitime &&
+    Number.isNaN(Number(config.pingbitime)) &&
+    !config.pingbitime.includes('###')
+) {
     throw new Error('配置错误：pingbitime 必须是数字或"分类###天数"格式'); 
 }
 
