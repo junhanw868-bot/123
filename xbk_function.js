@@ -3,7 +3,7 @@
 //用户配置区域开始********************************* // 版本号：DeepSeek6
 
 const notify = require('./xbk_sendNotify'); 
-const fs = require('fs'); 
+const fs = require('node:fs'); 
 const got = require('got'); 
 const path = require('path'); 
 const lockFile = require('proper-lockfile');
