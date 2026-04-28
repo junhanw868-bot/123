@@ -1,37 +1,33 @@
 'use strict';
 
-//用户配置区域开始********************************* // 版本号：DeepSeek6
+//用户配置区域开始********************************* // 版本号:DeepSeek6
 
 const notify = require('./xbk_sendNotify'); 
-const fs = require('node:fs'); 
+const fs = require('fs'); 
 const got = require('got'); 
 const path = require('path'); 
 const lockFile = require('proper-lockfile');
 
 const DRY_RUN = process.argv.includes('--dry-run'); 
-if (DRY_RUN) { console.log('[DRY-RUN] 仅验证过滤结果，不推送、不写入缓存'); }
+if (DRY_RUN) { console.log('[DRY-RUN] 仅验证过滤结果,不推送、不写入缓存'); }
 
 const MAX_CACHE_SIZE = 100; 
 const REQUEST_TIMEOUT_MS = 10000; 
 const REQUEST_RETRY_LIMIT = 2; 
 const MS_PER_DAY = 86400000;
 
-var config = require('./xbk_config.json');
+const config = require('./xbk_config.json'); // 使用 const 代替 var
 
 // 配置合法性校验 
 if (!config.domin || !config.domin.startsWith('http')) { 
-    throw new Error('配置错误：domin 必须是合法的 HTTP URL'); 
+    throw new Error('配置错误:domin 必须是合法的 HTTP URL'); 
 }
 
-if (
-    config.pingbitime &&
-    Number.isNaN(Number(config.pingbitime)) &&
-    !config.pingbitime.includes('###')
-) {
-    throw new Error('配置错误：pingbitime 必须是数字或"分类###天数"格式'); 
+if (config.pingbitime && Number.isNaN(Number(config.pingbitime)) && !config.pingbitime.includes('###')) { // [FIXED] isNaN -> Number.isNaN
+    throw new Error('配置错误:pingbitime 必须是数字或"分类###天数"格式'); 
 }
 
-// ⚠️ 注意：domin 是原代码的拼写，不要修改为 domain 
+// 注意:domin 是原代码的拼写,不要修改为 domain 
 const domin = config.domin; 
 const pingbifenlei = config.pingbifenlei; 
 const pingbibiaoti = config.pingbibiaoti; 
@@ -47,23 +43,23 @@ const pingbitime = config.pingbitime;
 
 const newUrl = domin + '/plus/json/push.json';
 
-// 安全构造正则（捕获异常，防止启动崩溃）
+// 安全构造正则(捕获异常,防止启动崩溃)
 function safeRegExp(pattern, flags) {
     if (!pattern) return null;
     try {
         return new RegExp(pattern, flags);
     } catch (e) {
-        console.error(`正则表达式无效: ${pattern}，已忽略`, e.message);
+        console.error(`正则表达式无效: ${pattern},已忽略`, e.message);
         return null;
     }
 }
 
-// 转义正则特殊字符，用于动态拼接用户输入
+// 转义正则特殊字符,用于动态拼接用户输入
 function escapeRegex(string) {
-    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // 此处用正则,保留原样
 }
 
-// 正则预编译（使用安全构造）
+// 正则预编译(使用安全构造)
 const pingbifenleiReg = safeRegExp(pingbifenlei, 'i');
 const pingbilouzhuReg = safeRegExp(pingbilouzhu, 'i');
 const zhanxianlouzhuReg = safeRegExp(zhanxianlouzhu, 'i');
@@ -76,9 +72,9 @@ const zhanxianneirongReg = safeRegExp(zhanxianneirong, 'i');
 const pingbineirongplusReg = safeRegExp(pingbineirongplus, 'i');
 
 function daysComputed(time) {
-    if (typeof time !== 'string' || !time) return Infinity;  // 无法计算时视为很老，避免误放
+    if (typeof time !== 'string' || !time) return Infinity;  // 无法计算时视为很老,避免误放
     const oldTime = new Date(time.replace(/-/g, '/'));
-    if (isNaN(oldTime.getTime())) {
+    if (Number.isNaN(oldTime.getTime())) { // [FIXED] isNaN -> Number.isNaN
         console.warn('无法解析日期:', time);
         return Infinity;
     }
@@ -94,7 +90,7 @@ function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilou
         pingbibiaotiplusarr, xiaopingbibiaotiplusarr, zhanxianneirongarr, xiaozhanxianneirongarr,
         pingbineirongarr, xiaopingbineirongarr, pingbineirongplusarr, xiaopingbineirongplusarr;
 
-    // 显式初始化所有标志变量，避免 undefined 依赖
+    // 显式初始化所有标志变量,避免 undefined 依赖
     let louzhubaoliu = 0, biaotibaoliu = 0, neirongbaoliu = 0,
         louzhupingbi = 0, louzhupingbiplus = 0, 
         biaotipingbi = 0, biaotipingbiplus = 0,
@@ -105,10 +101,10 @@ function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilou
     const titleStr = (typeof group.title === 'string' && group.title) ? group.title : null;
     const contentStr = (typeof group.content === 'string' && group.content) ? group.content : null;
 
-    // ------ 1. 时间屏蔽（优先级最高）------
+    // ------ 1. 时间屏蔽(优先级最高)------
     if (pingbitime && group.louzhuregtime) {
         if (typeof group.louzhuregtime !== 'string') {
-            // 类型不符，跳过时间过滤
+            // 类型不符,跳过时间过滤
         } else if (pingbitime.match(/###/)) {
             pingbitimearr = pingbitime.split(/<br>|\n\n|\r\n/);
             for (let j = 0; j < pingbitimearr.length; j++) {
@@ -116,7 +112,7 @@ function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilou
                 if (
                     catStr &&
                     catStr.match(new RegExp(escapeRegex(xiaopingbitimearr[0]), "i")) &&
-                    !isNaN(Number(xiaopingbitimearr[1])) &&
+                    !Number.isNaN(Number(xiaopingbitimearr[1])) && // [FIXED] isNaN -> Number.isNaN
                     Number(xiaopingbitimearr[1]) > daysComputed(group.louzhuregtime)
                 ) {
                     return false;
@@ -124,7 +120,7 @@ function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilou
             }
         } else {
             if (
-                !isNaN(Number(pingbitime)) &&
+                !Number.isNaN(Number(pingbitime)) && // [FIXED] isNaN -> Number.isNaN
                 Number(pingbitime) > daysComputed(group.louzhuregtime)
             ) {
                 return false;
@@ -139,7 +135,7 @@ function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilou
         }
     }
 
-    // ------ 3. 楼主（louzhu）规则 ------
+    // ------ 3. 楼主(louzhu)规则 ------
 
     // 3.1 楼主强制展现
     if (zhanxianlouzhu && louzhuStr) {
@@ -185,7 +181,7 @@ function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilou
         }
     }
 
-    // 3.3 楼主加强屏蔽（增加 louzhubaoliu != 1 检查，防止覆盖强制展现）
+    // 3.3 楼主加强屏蔽
     if (pingbilouzhuplus && louzhuStr && louzhubaoliu != 1 && louzhupingbi != 1) {
         if (pingbilouzhuplus.match(/###/)) {
             pingbilouzhuplusarr = pingbilouzhuplus.split(/<br>|\n\n|\r\n/);
@@ -213,9 +209,8 @@ function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilou
         return false;
     }
 
-    // ------ 4. 标题（title）规则 ------
+    // ------ 4. 标题规则 ------
 
-    // 4.1 标题强制展现
     if (zhanxianbiaoti && titleStr) {
         if (zhanxianbiaoti.match(/###/)) {
             zhanxianbiaotiarr = zhanxianbiaoti.split(/<br>|\n\n|\r\n/);
@@ -237,7 +232,6 @@ function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilou
         }
     }
 
-    // 4.2 标题屏蔽
     if (pingbibiaoti && titleStr && louzhubaoliu != 1 && biaotibaoliu != 1) {
         if (pingbibiaoti.match(/###/)) {
             pingbibiaotiarr = pingbibiaoti.split(/<br>|\n\n|\r\n/);
@@ -259,7 +253,6 @@ function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilou
         }
     }
 
-    // 4.3 标题加强屏蔽
     if (pingbibiaotiplus && titleStr && louzhubaoliu != 1 && biaotipingbi != 1) {
         if (pingbibiaotiplus.match(/###/)) {
             pingbibiaotiplusarr = pingbibiaotiplus.split(/<br>|\n\n|\r\n/);
@@ -287,9 +280,8 @@ function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilou
         return false;
     }
 
-    // ------ 5. 内容（content）规则 ------
+    // ------ 5. 内容规则 ------
 
-    // 5.1 内容强制展现
     if (zhanxianneirong && contentStr) {
         if (zhanxianneirong.match(/###/)) {
             zhanxianneirongarr = zhanxianneirong.split(/<br>|\n\n|\r\n/);
@@ -311,7 +303,6 @@ function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilou
         }
     }
 
-    // 5.2 内容屏蔽
     if (pingbineirong && contentStr && louzhubaoliu != 1 && biaotibaoliu != 1 && neirongbaoliu != 1) {
         if (pingbineirong.match(/###/)) {
             pingbineirongarr = pingbineirong.split(/<br>|\n\n|\r\n/);
@@ -333,7 +324,6 @@ function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilou
         }
     }
 
-    // 5.3 内容加强屏蔽
     if (pingbineirongplus && contentStr && louzhubaoliu != 1 && biaotibaoliu != 1 && neirongpingbi != 1) {
         if (pingbineirongplus.match(/###/)) {
             pingbineirongplusarr = pingbineirongplus.split(/<br>|\n\n|\r\n/);
@@ -375,7 +365,7 @@ function tuisong_replace(text, shuju) {
         shuju.shorttime = `${posttime.getHours()}:${add0(posttime.getMinutes())}`;
     }
 
-    let content_html = `${shuju.content_html || ''}<br>&nbsp;<br>&nbsp;<br>原文链接：<a href="${shuju.url}" target="_blank">${shuju.url}</a><br>&nbsp;<br>&nbsp;<br>`;
+    let content_html = `${shuju.content_html || ''}<br>&nbsp;<br>&nbsp;<br>原文链接:<a href="${shuju.url}" target="_blank">${shuju.url}</a><br>&nbsp;<br>&nbsp;<br>`;
 
     const replacements = {
         '{标题}': shuju.title,
@@ -397,10 +387,10 @@ function tuisong_replace(text, shuju) {
 
     for (const [key, value] of Object.entries(replacements)) {
         if (value !== undefined) {
-            // 使用 split/join 全局替换，避免正则特殊字符导致的崩溃
-            text = text.split(key).join(value);
+            // [FIXED] 使用 replaceAll 替换字面字符串,避免 split/join
+            text = text.replaceAll(key, value);
         } else {
-            text = text.split(key).join('');
+            text = text.replaceAll(key, '');
         }
     }
 
@@ -414,7 +404,7 @@ function htmlToMarkdown(shuju) {
         return '#'.repeat(level) + ' ' + content + '\n\n';
     });
 
-    // 优化后的正则，限定字符减少回溯
+    // 优化后的正则,限定字符减少回溯
     html = html.replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
     html = html.replace(/<img[^>]+src="([^"]+)"[^>]*alt="([^"]*)"[^>]*>/gi, '\n\n![$2]($1)\n\n');
     html = html.replace(/<img[^>]+src="([^"]+)"[^>]*>/gi, '\n\n![]($1)\n\n');
@@ -423,7 +413,7 @@ function htmlToMarkdown(shuju) {
     html = html.replace(/<\/p>/gi, '\n\n');
     html = html.replace(/<[^>]+>/g, '');
     html = html.replace(/\n{3,}/g, '\n\n');
-    html = `${html}\n\n原文链接：[${shuju.url}](${shuju.url})\n\n\n\n`;
+    html = `${html}\n\n原文链接:[${shuju.url}](${shuju.url})\n\n\n\n`;
 
     return html.trim();
 }
@@ -432,7 +422,7 @@ const DATA_DIR = path.join(__dirname, 'xianbaoku_cache');
 try {
     if (!fs.existsSync(DATA_DIR)) { fs.mkdirSync(DATA_DIR); }
 } catch (e) {
-    console.error('创建缓存目录失败，后续读写可能出错:', e.message);
+    console.error('创建缓存目录失败,后续读写可能出错:', e.message);
 }
 
 function getFilePath(filename) { return path.join(DATA_DIR, filename); }
@@ -452,7 +442,7 @@ function fixJsonFile(filePath) {
         const content = fs.readFileSync(filePath, 'utf8');
         JSON.parse(content || '[]');
     } catch (error) {
-        console.error(`JSON解析错误，重置文件 ${filePath}:`, error.message);
+        console.error(`JSON解析错误,重置文件 ${filePath}:`, error.message);
         try {
             fs.writeFileSync(filePath, '[]', 'utf8');
         } catch (writeErr) {
@@ -548,147 +538,124 @@ function getFileName(url) {
 
 console.debug('开始获取线报酷数据...');
 
-got(newUrl, { 
-    timeout: REQUEST_TIMEOUT_MS, 
-    retry: { limit: REQUEST_RETRY_LIMIT, methods: ['GET'] } 
-})
-.then(async (response) => {
-    let xbkdata;
+(async () => {
     try {
-        xbkdata = JSON.parse(response.body);
-    } catch (e) {
-        console.error('返回内容不是合法 JSON');
-        console.error('响应片段：', response.body.slice(0, 300));
-        return;
-    }
-    try {
-        if (!xbkdata) {
-            console.log('警告：服务器返回空数据');
-            return;
-        }
+        const response = await got(newUrl, {
+            timeout: REQUEST_TIMEOUT_MS,
+            retry: { limit: REQUEST_RETRY_LIMIT, methods: ['GET'] }
+        });
 
-        let list = [];
-        if (Array.isArray(xbkdata)) {
-            list = xbkdata;
-        } else if (xbkdata.data && Array.isArray(xbkdata.data)) {
-            list = xbkdata.data;
-        } else {
-            console.log('数据格式异常，非列表');
-            return;
-        }
-
-        const cacheFileName = getFileName(newUrl);
-        const cacheFilePath = getFilePath(cacheFileName);
-
-        // 加锁读取缓存ID，避免并发下的去重失效
-        let cachedIds = new Set();
-        let releaseRead = null;
+        // ===== 原 .then 里面的全部代码,直接放在这里 =====
+        let xbkdata;
         try {
-    ensureFileExists(cacheFilePath);
-    releaseRead = await lockFile.lock(cacheFilePath, {
-        retries: { retries: 3, factor: 2, minTimeout: 100, maxTimeout: 500 }
-    });
-    cachedIds = new Set(readMessages(cacheFilePath).map(m => m.id));
-} catch (lockErr) {
-
-            console.warn('获取缓存锁失败，使用空集合继续:', lockErr.message);
-        } finally {
-            if (releaseRead) {
-                try {
-                    await releaseRead();
-                } catch (e) {
-                    console.error('释放文件锁失败:', e.message);
-                }
-            }
+            xbkdata = JSON.parse(response.body);
+        } catch (e) {
+            console.error('返回内容不是合法 JSON');
+            console.error('响应片段:', response.body.slice(0, 300));
+            return;
         }
-
-        // 补齐缺失的 id，防止去重紊乱
-        list.forEach(item => {
-            if (item.id === undefined || item.id === null) {
-                console.warn('数据缺少 id，使用 url 作为标识');
-                item.id = item.url || `unknown_${Date.now()}_${Math.random()}`;
+        try {
+            if (!xbkdata) {
+                console.log('警告:服务器返回空数据');
+                return;
             }
-        });
 
-        let items = [];
+            let list = [];
+            if (Array.isArray(xbkdata)) {
+                list = xbkdata;
+            } else if (xbkdata.data && Array.isArray(xbkdata.data)) {
+                list = xbkdata.data;
+            } else {
+                console.log('数据格式异常,非列表');
+                return;
+            }
 
-        for (const item of list) {
-            if (!cachedIds.has(item.id)) {
-                await appendMessageToFile(item, cacheFileName);
+            const cacheFileName = getFileName(newUrl);
+            const cacheFilePath = getFilePath(cacheFileName);
 
-                if (
-                    listfilter(
-                        item,
-                        pingbifenlei,
-                        pingbilouzhu,
-                        zhanxianlouzhu,
-                        pingbilouzhuplus,
-                        pingbibiaoti,
-                        zhanxianbiaoti,
-                        pingbibiaotiplus,
-                        pingbineirong,
-                        zhanxianneirong,
-                        pingbineirongplus,
-                        pingbitime
-                    )
-                ) {
-                    items.push(item);
+            let cachedIds = new Set();
+            let releaseRead = null;
+            try {
+                ensureFileExists(cacheFilePath);
+                releaseRead = await lockFile.lock(cacheFilePath, {
+                    retries: { retries: 3, factor: 2, minTimeout: 100, maxTimeout: 500 }
+                });
+                cachedIds = new Set(readMessages(cacheFilePath).map(m => m.id));
+            } catch (lockErr) {
+                console.warn('获取缓存锁失败,使用空集合继续:', lockErr.message);
+            } finally {
+                if (releaseRead) {
+                    try { await releaseRead(); } catch (e) { console.error('释放文件锁失败:', e.message); }
                 }
             }
+
+            list.forEach(item => {
+                if (item.id === undefined || item.id === null) {
+                    console.warn('数据缺少 id,使用 url 作为标识');
+                    item.id = item.url || `unknown_${Date.now()}_${Math.random()}`;
+                }
+            });
+
+            let items = [];
+            for (const item of list) {
+                if (!cachedIds.has(item.id)) {
+                    await appendMessageToFile(item, cacheFileName);
+                    if (listfilter(item, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilouzhuplus, pingbibiaoti, zhanxianbiaoti, pingbibiaotiplus, pingbineirong, zhanxianneirong, pingbineirongplus, pingbitime)) {
+                        items.push(item);
+                    }
+                }
+            }
+
+            let hebingdata = '';
+            items.forEach(item => {
+                if (item.url) {
+                    if (!/^https?:\/\//i.test(item.url)) {
+                        item.url = domin + item.url;
+                    }
+                } else {
+                    console.warn('数据缺少 url,使用空链接:', item.title);
+                    item.url = domin + '/';
+                }
+
+                let text = '{标题}{内容}';
+                let desp = '{链接}';
+                text = tuisong_replace(text, item);
+                desp = tuisong_replace(desp, item);
+
+                if (!DRY_RUN) {
+                    try {
+                        notify.wxPusherNotify(
+                            tuisong_replace('【{分类名}】{标题}', item),
+                            tuisong_replace('<h5>{标题}</h5><br>{Html内容}', item)
+                        );
+                    } catch (pushError) {
+                        console.error(`推送失败: ${item.title}`, pushError.message);
+                    }
+                }
+
+                console.log('-----------------------------');
+                console.log('发现到新数据:' + item.title + '【' + item.catename + '】' + item.url);
+
+                if (hebingdata) {
+                    hebingdata += '\n\n';
+                }
+                hebingdata += tuisong_replace('{标题}【{分类名}】{链接}', item);
+            });
+
+            console.log('\n\n\n\n*******************************************');
+            console.debug(`获取到${list.length}条数据,筛选后的新数据${items.length}条,本次任务结束`);
+        } catch (innerError) {
+            console.error('处理数据时发生错误:', innerError);
         }
+        // ===== 原 .then 代码结束 =====
 
-        let hebingdata = '';
-
-        items.forEach(item => {
-    if (item.url) {
-    if (!/^https?:\/\//i.test(item.url)) {
-        item.url = domin + item.url;
+    } catch (error) {
+        if (error.response) {
+            console.log('请求失败,状态码:', error.response.statusCode);
+        } else if (error.code === 'ETIMEDOUT') {
+            console.log('请求超时:', error.message);
+        } else {
+            console.log('请求错误:', error.message);
+        }
     }
-} else {
-    console.warn('数据缺少 url，使用空链接:', item.title);
-    item.url = domin + '/';
-}
-
-            
-
-            let text = '{标题}{内容}';
-            let desp = '{链接}';
-
-            text = tuisong_replace(text, item);
-            desp = tuisong_replace(desp, item);
-
-            if (!DRY_RUN) {
-                try {
-                    notify.wxPusherNotify(
-                        tuisong_replace('【{分类名}】{标题}', item),
-                        tuisong_replace('<h5>{标题}</h5><br>{Html内容}', item)
-                    );
-                } catch (pushError) {
-                    console.error(`推送失败: ${item.title}`, pushError.message);
-                }
-            }
-
-            console.log('-----------------------------');
-            console.log('发现到新数据：' + item.title + '【' + item.catename + '】' + item.url);
-
-            if (hebingdata) {
-                hebingdata += '\n\n';
-            }
-            hebingdata += tuisong_replace('{标题}【{分类名}】{链接}', item);
-        });
-
-        console.log('\n\n\n\n*******************************************');
-        console.debug(`获取到${list.length}条数据，筛选后的新数据${items.length}条，本次任务结束`);
-    } catch (innerError) {
-        console.error('处理数据时发生错误:', innerError);
-    }
-})
-.catch(error => { 
-    if (error.response) { 
-        console.log('请求失败，状态码:', error.response.statusCode); 
-    } else if (error.code === 'ETIMEDOUT') { 
-        console.log('请求超时:', error.message); 
-    } else { 
-        console.log('请求错误:', error.message); 
-    } 
-});
+})();
