@@ -56,7 +56,8 @@ function safeRegExp(pattern, flags) {
 
 // 转义正则特殊字符,用于动态拼接用户输入
 function escapeRegex(string) {
-    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // 此处用正则,保留原样
+    // [CHANGED] replace -> replaceAll
+    return string.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // 正则预编译(使用安全构造)
@@ -73,7 +74,8 @@ const pingbineirongplusReg = safeRegExp(pingbineirongplus, 'i');
 
 function daysComputed(time) {
     if (typeof time !== 'string' || !time) return Infinity;  // 无法计算时视为很老,避免误放
-    const oldTime = new Date(time.replace(/-/g, '/'));
+    // [CHANGED] replace -> replaceAll (简单字符替换)
+    const oldTime = new Date(time.replaceAll('-', '/'));
     if (Number.isNaN(oldTime.getTime())) { // [FIXED] isNaN -> Number.isNaN
         console.warn('无法解析日期:', time);
         return Infinity;
@@ -400,19 +402,19 @@ function tuisong_replace(text, shuju) {
 function htmlToMarkdown(shuju) { 
     let html = shuju.content_html ? shuju.content_html : '';
 
-    html = html.replace(/<h([1-6])>(.*?)<\/h\1>/gi, function(match, level, content) {
+    // [CHANGED] 所有 replace 改为 replaceAll，因为正则均带有全局标志
+    html = html.replaceAll(/<h([1-6])>(.*?)<\/h\1>/gi, function(match, level, content) {
         return '#'.repeat(level) + ' ' + content + '\n\n';
     });
 
-    // 优化后的正则,限定字符减少回溯
-    html = html.replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
-    html = html.replace(/<img[^>]+src="([^"]+)"[^>]*alt="([^"]*)"[^>]*>/gi, '\n\n![$2]($1)\n\n');
-    html = html.replace(/<img[^>]+src="([^"]+)"[^>]*>/gi, '\n\n![]($1)\n\n');
-    html = html.replace(/<br\s*\/?>/gi, '\n\n');
-    html = html.replace(/<p[^>]*>/gi, '\n\n');
-    html = html.replace(/<\/p>/gi, '\n\n');
-    html = html.replace(/<[^>]+>/g, '');
-    html = html.replace(/\n{3,}/g, '\n\n');
+    html = html.replaceAll(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
+    html = html.replaceAll(/<img[^>]+src="([^"]+)"[^>]*alt="([^"]*)"[^>]*>/gi, '\n\n![$2]($1)\n\n');
+    html = html.replaceAll(/<img[^>]+src="([^"]+)"[^>]*>/gi, '\n\n![]($1)\n\n');
+    html = html.replaceAll(/<br\s*\/?>/gi, '\n\n');
+    html = html.replaceAll(/<p[^>]*>/gi, '\n\n');
+    html = html.replaceAll(/<\/p>/gi, '\n\n');
+    html = html.replaceAll(/<[^>]+>/g, '');
+    html = html.replaceAll(/\n{3,}/g, '\n\n');
     html = `${html}\n\n原文链接:[${shuju.url}](${shuju.url})\n\n\n\n`;
 
     return html.trim();
