@@ -60,17 +60,8 @@ function escapeRegex(string) {
     return string.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// 正则预编译(使用安全构造)
+// 正则预编译(使用安全构造) —— 仅保留分类屏蔽正则，其他统一用规则数组
 const pingbifenleiReg = safeRegExp(pingbifenlei, 'i');
-const pingbilouzhuReg = safeRegExp(pingbilouzhu, 'i');
-const zhanxianlouzhuReg = safeRegExp(zhanxianlouzhu, 'i');
-const pingbilouzhuplusReg = safeRegExp(pingbilouzhuplus, 'i');
-const pingbibiaotiReg = safeRegExp(pingbibiaoti, 'i');
-const zhanxianbiaotiReg = safeRegExp(zhanxianbiaoti, 'i');
-const pingbibiaotiplusReg = safeRegExp(pingbibiaotiplus, 'i');
-const pingbineirongReg = safeRegExp(pingbineirong, 'i');
-const zhanxianneirongReg = safeRegExp(zhanxianneirong, 'i');
-const pingbineirongplusReg = safeRegExp(pingbineirongplus, 'i');
 
 function daysComputed(time) {
     if (typeof time !== 'string' || !time) return Infinity;  // 无法计算时视为很老,避免误放
@@ -84,273 +75,145 @@ function daysComputed(time) {
     return diff > 0 ? Math.floor(diff / MS_PER_DAY) : 0;
 }
 
-function listfilter(group, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilouzhuplus, pingbibiaoti, zhanxianbiaoti, pingbibiaotiplus, pingbineirong, zhanxianneirong, pingbineirongplus, pingbitime) {
+// ---------- 规则解析与匹配 ----------
+/**
+ * 把「分类###值」或「纯正则字符串」统一解析成规则数组
+ * 每条规则形如 { catRegex: RegExp|null, valRegex: RegExp }
+ */
+function parseRules(configStr) {
+    if (!configStr) return [];
+    if (/###/.test(configStr)) {
+        return configStr.split(/<br>|\n\n|\r\n/)
+            .filter(Boolean)
+            .map(part => {
+                const idx = part.indexOf('###');
+                if (idx === -1) return null;
+                const cat = part.slice(0, idx);
+                const val = part.slice(idx + 3);
+                if (!val) return null;
+                return {
+                    catRegex: cat ? new RegExp(escapeRegex(cat), 'i') : null,
+                    valRegex: new RegExp(escapeRegex(val), 'i')
+                };
+            })
+            .filter(Boolean);
+    } else {
+        // 纯正则模式: 没有分类维度
+        return [{ catRegex: null, valRegex: safeRegExp(configStr, 'i') }];
+    }
+}
 
-    let pingbitimearr, xiaopingbitimearr, zhanxianlouzhuarr, xiaozhanxianlouzhuarr,
-        pingbilouzhuarr, xiaopingbilouzhuarr, pingbilouzhuplusarr, xiaopingbilouzhuplusarr,
-        zhanxianbiaotiarr, xiaozhanxianbiaotiarr, pingbibiaotiarr, xiaopingbibiaotiarr,
-        pingbibiaotiplusarr, xiaopingbibiaotiplusarr, zhanxianneirongarr, xiaozhanxianneirongarr,
-        pingbineirongarr, xiaopingbineirongarr, pingbineirongplusarr, xiaopingbineirongplusarr;
+/** 测试单条规则是否匹配 */
+function matchesRule(rule, catStr, targetStr) {
+    if (!rule.valRegex || !targetStr || !rule.valRegex.test(targetStr)) return false;
+    if (rule.catRegex) {
+        return catStr && rule.catRegex.test(catStr);
+    }
+    return true; // 无需匹配分类
+}
 
-    // 显式初始化所有标志变量,避免 undefined 依赖
-    let louzhubaoliu = 0, biaotibaoliu = 0, neirongbaoliu = 0,
-        louzhupingbi = 0, louzhupingbiplus = 0, 
-        biaotipingbi = 0, biaotipingbiplus = 0,
-        neirongpingbi = 0, neirongpingbiplus = 0;
+/** 规则数组中是否任意一条匹配 */
+function matchesAnyRule(rules, catStr, targetStr) {
+    return rules.some(rule => matchesRule(rule, catStr, targetStr));
+}
 
+// ---------- 时间屏蔽 ----------
+function checkTimePingbi(group, pingbitime, catStr) {
+    if (!pingbitime || !group.louzhuregtime || typeof group.louzhuregtime !== 'string') return false;
+
+    if (/###/.test(pingbitime)) {
+        const rules = pingbitime.split(/<br>|\n\n|\r\n/);
+        for (const rule of rules) {
+            const parts = rule.split('###');
+            if (
+                parts.length >= 2 &&
+                catStr &&
+                new RegExp(escapeRegex(parts[0]), 'i').test(catStr) &&
+                !Number.isNaN(Number(parts[1])) &&
+                Number(parts[1]) > daysComputed(group.louzhuregtime)
+            ) {
+                return true; // 屏蔽
+            }
+        }
+        return false;
+    }
+
+    if (!Number.isNaN(Number(pingbitime)) && Number(pingbitime) > daysComputed(group.louzhuregtime)) {
+        return true;
+    }
+    return false;
+}
+
+// ---------- 预解析所有规则，避免每次调用 listfilter 重复解析 ----------
+const RULES = {
+    zhanxianlouzhu: parseRules(zhanxianlouzhu),
+    pingbilouzhu: parseRules(pingbilouzhu),
+    pingbilouzhuplus: parseRules(pingbilouzhuplus),
+    zhanxianbiaoti: parseRules(zhanxianbiaoti),
+    pingbibiaoti: parseRules(pingbibiaoti),
+    pingbibiaotiplus: parseRules(pingbibiaotiplus),
+    zhanxianneirong: parseRules(zhanxianneirong),
+    pingbineirong: parseRules(pingbineirong),
+    pingbineirongplus: parseRules(pingbineirongplus),
+};
+
+// 重构后的过滤函数，复杂度 < 15
+function listfilter(group) {
     const catStr = (typeof group.catename === 'string' && group.catename) ? group.catename : null;
     const louzhuStr = (typeof group.louzhu === 'string' && group.louzhu) ? group.louzhu : null;
     const titleStr = (typeof group.title === 'string' && group.title) ? group.title : null;
     const contentStr = (typeof group.content === 'string' && group.content) ? group.content : null;
 
-    // ------ 1. 时间屏蔽(优先级最高)------
-    if (pingbitime && group.louzhuregtime) {
-        if (typeof group.louzhuregtime !== 'string') {
-            // 类型不符,跳过时间过滤
-        } else if (pingbitime.match(/###/)) {
-            pingbitimearr = pingbitime.split(/<br>|\n\n|\r\n/);
-            for (let j = 0; j < pingbitimearr.length; j++) {
-                xiaopingbitimearr = pingbitimearr[j].split("###");
-                if (
-                    catStr &&
-                    catStr.match(new RegExp(escapeRegex(xiaopingbitimearr[0]), "i")) &&
-                    !Number.isNaN(Number(xiaopingbitimearr[1])) && // [FIXED] isNaN -> Number.isNaN
-                    Number(xiaopingbitimearr[1]) > daysComputed(group.louzhuregtime)
-                ) {
-                    return false;
-                }
-            }
-        } else {
-            if (
-                !Number.isNaN(Number(pingbitime)) && // [FIXED] isNaN -> Number.isNaN
-                Number(pingbitime) > daysComputed(group.louzhuregtime)
-            ) {
-                return false;
-            }
-        }
-    }
+    // 1. 时间屏蔽
+    if (checkTimePingbi(group, pingbitime, catStr)) return false;
 
-    // ------ 2. 分类屏蔽 ------
-    if (pingbifenlei && catStr) {
-        if (catStr && pingbifenleiReg && pingbifenleiReg.test(catStr)) {
+    // 2. 分类屏蔽
+    if (catStr && pingbifenleiReg && pingbifenleiReg.test(catStr)) return false;
+
+    // 保留状态（跨字段依赖）
+    let louzhuRetain = false;
+    let titleRetain = false;
+    let contentRetain = false;
+
+    // 3. 楼主规则
+    if (louzhuStr) {
+        if (matchesAnyRule(RULES.zhanxianlouzhu, catStr, louzhuStr)) {
+            louzhuRetain = true;
+        }
+        if (!louzhuRetain && matchesAnyRule(RULES.pingbilouzhu, catStr, louzhuStr)) {
+            return false;
+        }
+        if (!louzhuRetain && matchesAnyRule(RULES.pingbilouzhuplus, catStr, louzhuStr)) {
             return false;
         }
     }
 
-    // ------ 3. 楼主(louzhu)规则 ------
-
-    // 3.1 楼主强制展现
-    if (zhanxianlouzhu && louzhuStr) {
-        if (zhanxianlouzhu.match(/###/)) {
-            zhanxianlouzhuarr = zhanxianlouzhu.split(/<br>|\n\n|\r\n/);
-            for (let j = 0; j < zhanxianlouzhuarr.length; j++) {
-                xiaozhanxianlouzhuarr = zhanxianlouzhuarr[j].split("###");
-                if (
-                    catStr &&
-                    catStr.match(new RegExp(escapeRegex(xiaozhanxianlouzhuarr[0]), "i")) &&
-                    xiaozhanxianlouzhuarr.length >= 2 &&
-                    louzhuStr.match(new RegExp(escapeRegex(xiaozhanxianlouzhuarr[1]), "i"))
-                ) {
-                    louzhubaoliu = 1;
-                }
-            }
-        } else {
-            if (louzhuStr && zhanxianlouzhuReg && zhanxianlouzhuReg.test(louzhuStr)) {
-                louzhubaoliu = 1;
-            }
+    // 4. 标题规则
+    if (titleStr) {
+        if (matchesAnyRule(RULES.zhanxianbiaoti, catStr, titleStr)) {
+            titleRetain = true;
+        }
+        if (!louzhuRetain && !titleRetain && matchesAnyRule(RULES.pingbibiaoti, catStr, titleStr)) {
+            return false;
+        }
+        if (!louzhuRetain && matchesAnyRule(RULES.pingbibiaotiplus, catStr, titleStr)) {
+            return false; // 加强屏蔽覆盖保留
         }
     }
 
-    // 3.2 楼主屏蔽
-    if (pingbilouzhu && louzhuStr && louzhubaoliu != 1) {
-        if (pingbilouzhu.match(/###/)) {
-            pingbilouzhuarr = pingbilouzhu.split(/<br>|\n\n|\r\n/);
-            for (let j = 0; j < pingbilouzhuarr.length; j++) {
-                xiaopingbilouzhuarr = pingbilouzhuarr[j].split("###");
-                if (
-                    catStr &&
-                    catStr.match(new RegExp(escapeRegex(xiaopingbilouzhuarr[0]), "i")) &&
-                    xiaopingbilouzhuarr.length >= 2 &&
-                    louzhuStr.match(new RegExp(escapeRegex(xiaopingbilouzhuarr[1]), "i"))
-                ) {
-                    louzhupingbi = 1;
-                }
-            }
-        } else {
-            if (louzhuStr && pingbilouzhuReg && pingbilouzhuReg.test(louzhuStr)) {
-                louzhupingbi = 1;
-            }
+    // 5. 内容规则
+    if (contentStr) {
+        if (matchesAnyRule(RULES.zhanxianneirong, catStr, contentStr)) {
+            contentRetain = true;
         }
-    }
-
-    // 3.3 楼主加强屏蔽
-    if (pingbilouzhuplus && louzhuStr && louzhubaoliu != 1 && louzhupingbi != 1) {
-        if (pingbilouzhuplus.match(/###/)) {
-            pingbilouzhuplusarr = pingbilouzhuplus.split(/<br>|\n\n|\r\n/);
-            for (let j = 0; j < pingbilouzhuplusarr.length; j++) {
-                xiaopingbilouzhuplusarr = pingbilouzhuplusarr[j].split("###");
-                if (
-                    catStr &&
-                    catStr.match(new RegExp(escapeRegex(xiaopingbilouzhuplusarr[0]), "i")) &&
-                    xiaopingbilouzhuplusarr.length >= 2 &&
-                    louzhuStr.match(new RegExp(escapeRegex(xiaopingbilouzhuplusarr[1]), "i"))
-                ) {
-                    louzhupingbiplus = 1;
-                    louzhubaoliu = 0;
-                }
-            }
-        } else {
-            if (louzhuStr && pingbilouzhuplusReg && pingbilouzhuplusReg.test(louzhuStr)) {
-                louzhupingbiplus = 1;
-                louzhubaoliu = 0;
-            }
+        if (!louzhuRetain && !titleRetain && !contentRetain &&
+            matchesAnyRule(RULES.pingbineirong, catStr, contentStr)) {
+            return false;
         }
-    }
-
-    if (louzhupingbi == 1 || louzhupingbiplus == 1) {
-        return false;
-    }
-
-    // ------ 4. 标题规则 ------
-
-    if (zhanxianbiaoti && titleStr) {
-        if (zhanxianbiaoti.match(/###/)) {
-            zhanxianbiaotiarr = zhanxianbiaoti.split(/<br>|\n\n|\r\n/);
-            for (let j = 0; j < zhanxianbiaotiarr.length; j++) {
-                xiaozhanxianbiaotiarr = zhanxianbiaotiarr[j].split("###");
-                if (
-                    catStr &&
-                    catStr.match(new RegExp(escapeRegex(xiaozhanxianbiaotiarr[0]), "i")) &&
-                    xiaozhanxianbiaotiarr.length >= 2 &&
-                    titleStr.match(new RegExp(escapeRegex(xiaozhanxianbiaotiarr[1]), "i"))
-                ) {
-                    biaotibaoliu = 1;
-                }
-            }
-        } else {
-            if (titleStr && zhanxianbiaotiReg && zhanxianbiaotiReg.test(titleStr)) {
-                biaotibaoliu = 1;
-            }
+        if (!louzhuRetain && !titleRetain &&
+            matchesAnyRule(RULES.pingbineirongplus, catStr, contentStr)) {
+            return false;
         }
-    }
-
-    if (pingbibiaoti && titleStr && louzhubaoliu != 1 && biaotibaoliu != 1) {
-        if (pingbibiaoti.match(/###/)) {
-            pingbibiaotiarr = pingbibiaoti.split(/<br>|\n\n|\r\n/);
-            for (let j = 0; j < pingbibiaotiarr.length; j++) {
-                xiaopingbibiaotiarr = pingbibiaotiarr[j].split("###");
-                if (
-                    catStr &&
-                    catStr.match(new RegExp(escapeRegex(xiaopingbibiaotiarr[0]), "i")) &&
-                    xiaopingbibiaotiarr.length >= 2 &&
-                    titleStr.match(new RegExp(escapeRegex(xiaopingbibiaotiarr[1]), "i"))
-                ) {
-                    biaotipingbi = 1;
-                }
-            }
-        } else {
-            if (titleStr && pingbibiaotiReg && pingbibiaotiReg.test(titleStr)) {
-                biaotipingbi = 1;
-            }
-        }
-    }
-
-    if (pingbibiaotiplus && titleStr && louzhubaoliu != 1 && biaotipingbi != 1) {
-        if (pingbibiaotiplus.match(/###/)) {
-            pingbibiaotiplusarr = pingbibiaotiplus.split(/<br>|\n\n|\r\n/);
-            for (let j = 0; j < pingbibiaotiplusarr.length; j++) {
-                xiaopingbibiaotiplusarr = pingbibiaotiplusarr[j].split("###");
-                if (
-                    catStr &&
-                    catStr.match(new RegExp(escapeRegex(xiaopingbibiaotiplusarr[0]), "i")) &&
-                    xiaopingbibiaotiplusarr.length >= 2 &&
-                    titleStr.match(new RegExp(escapeRegex(xiaopingbibiaotiplusarr[1]), "i"))
-                ) {
-                    biaotipingbiplus = 1;
-                    biaotibaoliu = 0;
-                }
-            }
-        } else {
-            if (titleStr && pingbibiaotiplusReg && pingbibiaotiplusReg.test(titleStr)) {
-                biaotipingbiplus = 1;
-                biaotibaoliu = 0;
-            }
-        }
-    }
-
-    if (biaotipingbi == 1 || biaotipingbiplus == 1) {
-        return false;
-    }
-
-    // ------ 5. 内容规则 ------
-
-    if (zhanxianneirong && contentStr) {
-        if (zhanxianneirong.match(/###/)) {
-            zhanxianneirongarr = zhanxianneirong.split(/<br>|\n\n|\r\n/);
-            for (let j = 0; j < zhanxianneirongarr.length; j++) {
-                xiaozhanxianneirongarr = zhanxianneirongarr[j].split("###");
-                if (
-                    catStr &&
-                    catStr.match(new RegExp(escapeRegex(xiaozhanxianneirongarr[0]), "i")) &&
-                    xiaozhanxianneirongarr.length >= 2 &&
-                    contentStr.match(new RegExp(escapeRegex(xiaozhanxianneirongarr[1]), "i"))
-                ) {
-                    neirongbaoliu = 1;
-                }
-            }
-        } else {
-            if (contentStr && zhanxianneirongReg && zhanxianneirongReg.test(contentStr)) {
-                neirongbaoliu = 1;
-            }
-        }
-    }
-
-    if (pingbineirong && contentStr && louzhubaoliu != 1 && biaotibaoliu != 1 && neirongbaoliu != 1) {
-        if (pingbineirong.match(/###/)) {
-            pingbineirongarr = pingbineirong.split(/<br>|\n\n|\r\n/);
-            for (let j = 0; j < pingbineirongarr.length; j++) {
-                xiaopingbineirongarr = pingbineirongarr[j].split("###");
-                if (
-                    catStr &&
-                    catStr.match(new RegExp(escapeRegex(xiaopingbineirongarr[0]), "i")) &&
-                    xiaopingbineirongarr.length >= 2 &&
-                    contentStr.match(new RegExp(escapeRegex(xiaopingbineirongarr[1]), "i"))
-                ) {
-                    neirongpingbi = 1;
-                }
-            }
-        } else {
-            if (contentStr && pingbineirongReg && pingbineirongReg.test(contentStr)) {
-                neirongpingbi = 1;
-            }
-        }
-    }
-
-    if (pingbineirongplus && contentStr && louzhubaoliu != 1 && biaotibaoliu != 1 && neirongpingbi != 1) {
-        if (pingbineirongplus.match(/###/)) {
-            pingbineirongplusarr = pingbineirongplus.split(/<br>|\n\n|\r\n/);
-            for (let j = 0; j < pingbineirongplusarr.length; j++) {
-                xiaopingbineirongplusarr = pingbineirongplusarr[j].split("###");
-                if (
-                    catStr &&
-                    catStr.match(new RegExp(escapeRegex(xiaopingbineirongplusarr[0]), "i")) &&
-                    xiaopingbineirongplusarr.length >= 2 &&
-                    contentStr.match(new RegExp(escapeRegex(xiaopingbineirongplusarr[1]), "i"))
-                ) {
-                    neirongpingbiplus = 1;
-                    neirongbaoliu = 0;
-                }
-            }
-        } else {
-            if (contentStr && pingbineirongplusReg && pingbineirongplusReg.test(contentStr)) {
-                neirongpingbiplus = 1;
-                neirongbaoliu = 0;
-            }
-        }
-    }
-
-    if (neirongpingbi == 1 || neirongpingbiplus == 1) {
-        return false;
     }
 
     return true;
@@ -602,7 +465,7 @@ console.debug('开始获取线报酷数据...');
             for (const item of list) {
                 if (!cachedIds.has(item.id)) {
                     await appendMessageToFile(item, cacheFileName);
-                    if (listfilter(item, pingbifenlei, pingbilouzhu, zhanxianlouzhu, pingbilouzhuplus, pingbibiaoti, zhanxianbiaoti, pingbibiaotiplus, pingbineirong, zhanxianneirong, pingbineirongplus, pingbitime)) {
+                    if (listfilter(item)) {  // 已大幅简化，仅传入 item
                         items.push(item);
                     }
                 }
