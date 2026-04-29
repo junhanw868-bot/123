@@ -1,195 +1,208 @@
-// ======================== 用户配置区域 ========================
-const push_config = {
-    HITOKOTO: 'false',      // 启用一言（随机句子）
+// ==================== 常量与预编译资源 ====================
+const NEWLINE_REGEX = /[\n\r]/g;             // 预编译正则，资源复用
+const DEFAULT_TIMEOUT = 15000;               // 请求超时，消除魔法数字
+const HITOKOTO_API = 'https://v1.hitokoto.cn/';
+const WXPUSHER_API = 'https://wxpusher.zjiecode.com/api/send/message';
+const PUSHPLUS_API = 'https://www.pushplus.plus/send';
+const DEFAULT_PUSHME_URL = 'https://push.i-i.me';
 
-    // WxPusher 配置
-    WX_pusher_appToken: '',
-    WX_pusher_topicIds: '',
-
-    // PushMe 配置
-    PUSHME_URL: 'https://push.i-i.me',
-    PUSHME_KEY: '',
-
-    // PushPlus 配置
-    PUSH_PLUS_TOKEN: '',
-    PUSH_PLUS_USER: '',
-};
-
-// ======================== 通用工具 ========================
+// ==================== HTTP 客户端（资源复用） ====================
 const got = require('got');
-const timeout = 15000;
 
 const httpClient = {
     async post(url, json, headers = {}) {
         const response = await got.post(url, {
             json,
             headers: { 'Content-Type': 'application/json', ...headers },
-            timeout,
+            timeout: DEFAULT_TIMEOUT,
         }).catch(err => {
+            // 局部容错：只抛出可读错误，不中断全局
             throw err?.response?.body || err;
         });
-        let body = response.body;
-        try { body = JSON.parse(body); } catch {}
-        return body;
+        return safeParseJSON(response.body);
     },
 
     async get(url) {
-        const response = await got.get(url, { timeout }).catch(err => {
+        const response = await got.get(url, { timeout: DEFAULT_TIMEOUT }).catch(err => {
             throw err?.response?.body || err;
         });
-        let body = response.body;
-        try { body = JSON.parse(body); } catch {}
-        return body;
+        return safeParseJSON(response.body);
     }
 };
 
-// ======================== 一言服务（独立模块） ========================
-class HitokotoService {
-    static async fetch() {
-        const url = 'https://v1.hitokoto.cn/';
-        const body = await httpClient.get(url);
-        return `${body.hitokoto}    ----${body.from}`;
+// 安全 JSON 解析，消除异常中断
+function safeParseJSON(raw) {
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return raw;
     }
 }
 
-// ======================== 推送器基类 / 接口 ========================
+// ================== 配置验证与规范化 ==================
+function normalizeConfig(raw) {
+    return {
+        HITOKOTO: raw.HITOKOTO !== 'false', // 字符串转布尔，语义明确
+        WX_pusher_appToken: raw.WX_pusher_appToken || '',
+        WX_pusher_topicIds: raw.WX_pusher_topicIds || '',
+        PUSHME_URL: raw.PUSHME_URL || DEFAULT_PUSHME_URL,
+        PUSHME_KEY: raw.PUSHME_KEY || '',
+        PUSH_PLUS_TOKEN: raw.PUSH_PLUS_TOKEN || '',
+        PUSH_PLUS_USER: raw.PUSH_PLUS_USER || '',
+    };
+}
+
+// ==================== 一言服务 ====================
+class HitokotoService {
+    static async fetch() {
+        const data = await httpClient.get(HITOKOTO_API);
+        return `${data.hitokoto}    ----${data.from}`;
+    }
+}
+
+// ==================== 推送器基类（接口契约） ====================
 class BaseNotifier {
     constructor(config) {
         this.config = config;
     }
 
     isEnabled() {
-        return false;  // 子类重写
+        return false; // 子类必须重写
     }
 
     async notify(title, content, params = {}) {
-        throw new Error('notify() must be implemented');
+        throw new Error('notify() must be implemented by subclass');
     }
 }
 
-// ---------------------- WxPusher 推送器 ----------------------
+// ------------------ WxPusher 推送器 ------------------
 class WxPusherNotifier extends BaseNotifier {
     isEnabled() {
-        return !!this.config.WX_pusher_appToken;
+        return Boolean(this.config.WX_pusher_appToken);
     }
 
-    async notify(title, content, params = {}) {
-        const { WX_pusher_appToken, WX_pusher_topicIds } = this.config;
+    async notify(title, content) {
         if (!this.isEnabled()) return;
 
         const payload = {
-            appToken: WX_pusher_appToken,
-            content: content,
+            appToken: this.config.WX_pusher_appToken,
+            content,
             summary: title.substring(0, 90),
-            contentType: 2,  // 1文字 2html 3markdown
-            topicIds: [WX_pusher_topicIds],
+            contentType: 2,
+            topicIds: [this.config.WX_pusher_topicIds],
         };
 
         try {
-            const data = await httpClient.post('https://wxpusher.zjiecode.com/api/send/message', payload);
+            const data = await httpClient.post(WXPUSHER_API, payload);
             if (data.code === 1000) {
-                console.log('WxPusher 发送成功');
+                console.log('[WxPusher] 发送成功');
             } else {
-                console.log('WxPusher 发送异常', data);
+                console.warn('[WxPusher] 发送异常', data);
             }
         } catch (err) {
-            console.log('WxPusher 发送失败', err);
+            console.error('[WxPusher] 发送失败', err);
         }
     }
 }
 
-// ---------------------- PushMe 推送器（支持多KEY）--------------------
+// ------------------ PushMe 推送器 ------------------
 class PushMeNotifier extends BaseNotifier {
     isEnabled() {
-        return !!this.config.PUSHME_KEY;
+        return Boolean(this.config.PUSHME_KEY);
     }
 
     async notify(title, content, params = {}) {
-        const { PUSHME_KEY, PUSHME_URL } = this.config;
         if (!this.isEnabled()) return;
 
-        const keys = PUSHME_KEY.split('#').filter(k => k.trim());
-        const url = PUSHME_URL || 'https://push.i-i.me';
+        const keys = this.config.PUSHME_KEY.split('#').filter(Boolean);
+        const url = this.config.PUSHME_URL;
 
         for (const key of keys) {
             const payload = {
-                push_key: key.trim(),
-                title: title,
-                content: content,
-                type: "markdown",
-                ...params
+                push_key: key,
+                title,
+                content,
+                type: 'markdown',
+                ...params,
             };
             try {
-                const data = await httpClient.post(url, payload);
-                if (data === 'success') {
-                    console.log(`PushMe (${key}) 发送成功`);
+                const res = await httpClient.post(url, payload);
+                if (res === 'success') {
+                    console.log(`[PushMe] ${key} 发送成功`);
                 } else {
-                    console.log(`PushMe (${key}) 发送异常: ${data}`);
+                    console.warn(`[PushMe] ${key} 响应异常`, res);
                 }
             } catch (err) {
-                console.log(`PushMe (${key}) 发送失败`, err);
+                console.error(`[PushMe] ${key} 发送失败`, err);
             }
         }
     }
 }
 
-// ---------------------- PushPlus 推送器 ----------------------
+// ------------------ PushPlus 推送器 ------------------
 class PushPlusNotifier extends BaseNotifier {
     isEnabled() {
-        return !!this.config.PUSH_PLUS_TOKEN;
+        return Boolean(this.config.PUSH_PLUS_TOKEN);
     }
 
-    async notify(title, content, params = {}) {
-        const { PUSH_PLUS_TOKEN, PUSH_PLUS_USER } = this.config;
+    async notify(title, content) {
         if (!this.isEnabled()) return;
 
-        // ✅ 修改点 1：使用 replaceAll 替代 replace（正则仍需 /g 标志）
-        const htmlContent = content.replaceAll(/[\n\r]/g, '<br>');
+        // 使用预编译正则替换换行，消除重复创建
+        const htmlContent = content.replace(NEWLINE_REGEX, '<br>');
+
         const payload = {
-            token: PUSH_PLUS_TOKEN,
-            title: title,
+            token: this.config.PUSH_PLUS_TOKEN,
+            title,
             content: htmlContent,
-            topic: PUSH_PLUS_USER,
+            topic: this.config.PUSH_PLUS_USER || undefined,
         };
 
         try {
-            const data = await httpClient.post('https://www.pushplus.plus/send', payload);
+            const data = await httpClient.post(PUSHPLUS_API, payload);
             if (data.code === 200) {
-                console.log(`PushPlus (${PUSH_PLUS_USER ? '一对多' : '一对一'}) 发送成功`);
+                const mode = this.config.PUSH_PLUS_USER ? '一对多' : '一对一';
+                console.log(`[PushPlus] ${mode} 发送成功`);
             } else {
-                console.log(`PushPlus 发送异常 ${data.msg}`);
+                console.warn(`[PushPlus] 发送异常`, data.msg);
             }
         } catch (err) {
-            console.log('PushPlus 发送失败', err);
+            console.error('[PushPlus] 发送失败', err);
         }
     }
 }
 
-// ======================== 通知管理器（组装所有积木） ========================
+// ==================== 通知管理器（组装与调度） ====================
 class NotifyManager {
-    constructor(config) {
-        this.config = config;
+    constructor(rawConfig) {
+        this.config = normalizeConfig(rawConfig);
         this.notifiers = [
-            new WxPusherNotifier(config),
-            new PushMeNotifier(config),
-            new PushPlusNotifier(config),
+            new WxPusherNotifier(this.config),
+            new PushMeNotifier(this.config),
+            new PushPlusNotifier(this.config),
         ];
     }
 
     async send(title, content, params = {}) {
-        // ✅ 修改点 2：使用可选链简化判空逻辑
-        const skipTitle = process.env.SKIP_PUSH_TITLE;
-        if (skipTitle?.split('\n').includes(title)) {
-            console.info(`${title} 在 SKIP_PUSH_TITLE 中，跳过推送`);
+        // 跳过推送逻辑（平铺直叙）
+        const skipList = process.env.SKIP_PUSH_TITLE;
+        if (skipList && skipList.split('\n').includes(title)) {
+            console.info(`[Notify] ${title} 位于跳过列表，已跳过`);
             return;
         }
 
+        // 附加一言内容
         let finalContent = content;
-        if (this.config.HITOKOTO !== 'false') {
-            const hitokoto = await HitokotoService.fetch();
-            finalContent += '\n\n' + hitokoto;
+        if (this.config.HITOKOTO) {
+            try {
+                const hitokoto = await HitokotoService.fetch();
+                finalContent += '\n\n' + hitokoto;
+            } catch (err) {
+                console.error('[Notify] 一言获取失败', err);
+            }
         }
 
+        // 筛选启用的推送器，并发推送，局部失败不影响全局
         const tasks = this.notifiers
             .filter(notifier => notifier.isEnabled())
             .map(notifier => notifier.notify(title, finalContent, params));
@@ -198,24 +211,33 @@ class NotifyManager {
     }
 }
 
-// 创建全局单例
+// ==================== 单例与导出（向下兼容） ====================
+const push_config = {
+    HITOKOTO: 'false',
+    WX_pusher_appToken: '',
+    WX_pusher_topicIds: '',
+    PUSHME_URL: 'https://push.i-i.me',
+    PUSHME_KEY: '',
+    PUSH_PLUS_TOKEN: '',
+    PUSH_PLUS_USER: '',
+};
+
 const manager = new NotifyManager(push_config);
 
-// ======================== 导出兼容原接口 ========================
 async function sendNotify(text, desp, params = {}) {
     return manager.send(text, desp, params);
 }
 
 function wxPusherNotify(text, desp) {
-    return new WxPusherNotifier(push_config).notify(text, desp);
+    return new WxPusherNotifier(normalizeConfig(push_config)).notify(text, desp);
 }
 
 function pushMeNotify(text, desp, params = {}) {
-    return new PushMeNotifier(push_config).notify(text, desp, params);
+    return new PushMeNotifier(normalizeConfig(push_config)).notify(text, desp, params);
 }
 
 function pushPlusNotify(text, desp) {
-    return new PushPlusNotifier(push_config).notify(text, desp);
+    return new PushPlusNotifier(normalizeConfig(push_config)).notify(text, desp);
 }
 
 module.exports = {
