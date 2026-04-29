@@ -59,9 +59,12 @@ function safeRegExp(pattern, flags) {
   }
 }
 
+// ---------- 修复1：提取正则常量，避免重复创建和双重转义 ----------
+const ESCAPE_REGEX = /[.*+?^${}()|[\]\\]/g;
+
 // 转义正则特殊字符,用于动态拼接用户输入
 function escapeRegex(string) {
-  return string.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return string.replace(ESCAPE_REGEX, '\\$&');
 }
 
 // 正则预编译(使用安全构造) —— 仅保留分类屏蔽正则，其他统一用规则数组
@@ -184,8 +187,8 @@ function isRetainedByField(rules, catStr, targetStr) {
 /** 检查字段是否被屏蔽规则命中（前提：未被保留） */
 function isBlockedByField(rules, catStr, targetStr, retainConditions) {
   if (!targetStr) return false;
-  // 只要任何一个保留条件成立，就不屏蔽
-  if (retainConditions.some(cond => cond === true)) return false;
+  // ---------- 修复2：使用 includes 代替 some 检查值存在性 ----------
+  if (retainConditions.includes(true)) return false;
   return matchesAnyRule(rules, catStr, targetStr);
 }
 
@@ -275,8 +278,9 @@ function tuisong_replace(text, shuju) {
     '{图片}': shuju.pic
   };
 
+  // ---------- 修复3：使用 ?? 代替 value !== undefined 的三元表达式 ----------
   for (const [key, value] of Object.entries(replacements)) {
-    text = text.replaceAll(key, value !== undefined ? value : '');
+    text = text.replaceAll(key, value ?? '');
   }
 
   return text;
@@ -407,11 +411,13 @@ async function appendMessageToFile(message, filename) {
   }
 }
 
+// ---------- 修复4：捕获异常时输出警告，不赤裸裸地吞掉 ----------
 function getFileName(url) {
   let filename;
   try {
     filename = path.basename(new URL(url).pathname);
-  } catch (_) {
+  } catch (e) {
+    console.warn('URL 解析失败，回退到 split 方式:', e.message);
     const parts = url.split('/');
     filename = parts[parts.length - 1];
   }
