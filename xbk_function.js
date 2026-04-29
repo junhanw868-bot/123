@@ -1,14 +1,13 @@
 'use strict';
 
-// ======================== 用户配置区域开始 ======================== // 版本号: v4.0
-
+// ======================== 用户配置区域 ======================== // 版本号: v4.1
 const notify = require('./xbk_sendNotify');
 const fs = require('node:fs');
 const got = require('got');
 const path = require('node:path');
 const lockFile = require('proper-lockfile');
 
-// ------------------------ 纯函数与常量定义 ------------------------
+// ------------------------ 纯函数与常量 ------------------------
 const EMPTY_JSON_ARRAY = '[]';
 const UTF8 = 'utf8';
 const CACHE_DIR_NAME = 'xianbaoku_cache';
@@ -43,17 +42,23 @@ const logger = {
 };
 
 // ------------------------ 配置加载与校验 ------------------------
-const config = require('./xbk_config.json');
+let config;
+try {
+  config = require('./xbk_config.json');
+} catch (e) {
+  logger.error('读取 xbk_config.json 失败，请检查文件是否存在及格式', e.message);
+  process.exit(1);
+}
 
 if (!config.domin?.startsWith('http')) {
-  throw new Error('配置错误:domin 必须是合法的 HTTP URL');
+  throw new Error('配置错误: domin 必须是合法的 HTTP URL');
 }
 if (
   config.pingbitime &&
   Number.isNaN(Number(config.pingbitime)) &&
   !config.pingbitime.includes('###')
 ) {
-  throw new Error('配置错误:pingbitime 必须是数字或"分类###天数"格式');
+  throw new Error('配置错误: pingbitime 必须是数字或"分类###天数"格式');
 }
 
 // 提取配置项（不可变）
@@ -72,14 +77,14 @@ const pingbitime = config.pingbitime;
 
 const fetchUrl = domin + '/plus/json/push.json';
 
-// ------------------------ 正则工具（安全设施） ------------------------
+// ------------------------ 正则安全设施 ------------------------
 const ESCAPE_REGEX = /[.*+?^${}()|[\]\\]/g;
 const MAX_USER_REGEX_LEN = 300;
 const MAX_MATCH_TARGET_LEN = 5000;
 const EVIL_PATTERN = /\([^)]*[*+][^)]*\)[*+]|\([^)]*\{[^}]*\}[^)]*\)[*+]/;
 
 function escapeRegex(str) {
-  return str.replaceAll(ESCAPE_REGEX, String.raw`\$&`);
+  return str.replace(ESCAPE_REGEX, '\\$&'); // 修复转义
 }
 
 function safeRegExp(pattern, flags) {
@@ -112,7 +117,7 @@ function safeUserRegExp(pattern, flags) {
 // ------------------------ 时间计算 ------------------------
 function daysComputed(time) {
   if (typeof time !== 'string' || !time) return Infinity;
-  const oldTime = new Date(time.replaceAll('-', '/'));
+  const oldTime = new Date(time.replace(/-/g, '/'));
   if (Number.isNaN(oldTime.getTime())) {
     logger.warn('无法解析日期:', time);
     return Infinity;
@@ -200,7 +205,10 @@ function matchesAnyRule(rules, catStr, targetStr) {
 
 // ------------------------ 时间屏蔽判断 ------------------------
 function parseTimeRule(rawRule) {
-  const [catPattern, daysStr] = rawRule.split('###');
+  const parts = rawRule.split('###');
+  if (parts.length < 2) return null;
+  const catPattern = parts[0];
+  const daysStr = parts[1];
   const days = Number(daysStr);
   if (!catPattern || Number.isNaN(days)) return null;
   const catRegex = safeRegExp(escapeRegex(catPattern), 'i');
@@ -251,7 +259,6 @@ function isBlocked(rules, catStr, targetStr, ...retainFlags) {
 }
 
 function filterItem(group) {
-  // 防御无效输入
   if (!group || typeof group !== 'object') {
     logger.warn('listfilter 接收到无效 group，已忽略');
     return false;
@@ -271,17 +278,14 @@ function filterItem(group) {
 
   if (isBlocked(RULES.pingbilouzhu, catStr, louzhuStr, louzhuRetain)) return false;
   if (isBlocked(RULES.pingbilouzhuplus, catStr, louzhuStr, louzhuRetain)) return false;
-
   if (isBlocked(RULES.pingbibiaoti, catStr, titleStr, louzhuRetain, titleRetain)) return false;
   if (isBlocked(RULES.pingbibiaotiplus, catStr, titleStr, louzhuRetain)) return false;
-
   if (isBlocked(RULES.pingbineirong, catStr, contentStr, louzhuRetain, titleRetain, contentRetain)) return false;
   if (isBlocked(RULES.pingbineirongplus, catStr, contentStr, louzhuRetain, titleRetain)) return false;
 
   return true;
 }
 
-// 带异常保护的包装器（局部容错）
 function safeFilterItem(item) {
   try {
     return filterItem(item);
@@ -307,22 +311,21 @@ const RE_ANY_TAG = /<[^>]+>/g;
 const RE_MULTI_NEWLINE = /\n{3,}/g;
 
 function htmlToMarkdown(shuju) {
-  let html = shuju.content_html ? shuju.content_html : '';
-  html = html.replaceAll(RE_H, (_, level, content) => '#'.repeat(Number(level)) + ' ' + content + '\n\n');
-  html = html.replaceAll(RE_A, '[$2]($1)');
-  html = html.replaceAll(RE_IMG_ALT, '\n\n![$2]($1)\n\n');
-  html = html.replaceAll(RE_IMG, '\n\n![]($1)\n\n');
-  html = html.replaceAll(RE_BR, '\n\n');
-  html = html.replaceAll(RE_P_OPEN, '\n\n');
-  html = html.replaceAll(RE_P_CLOSE, '\n\n');
-  html = html.replaceAll(RE_ANY_TAG, '');
-  html = html.replaceAll(RE_MULTI_NEWLINE, '\n\n');
+  let html = shuju.content_html || '';
+  html = html.replace(RE_H, (_, level, content) => '#'.repeat(Number(level)) + ' ' + content + '\n\n');
+  html = html.replace(RE_A, '[$2]($1)');
+  html = html.replace(RE_IMG_ALT, '\n\n![$2]($1)\n\n');
+  html = html.replace(RE_IMG, '\n\n![]($1)\n\n');
+  html = html.replace(RE_BR, '\n\n');
+  html = html.replace(RE_P_OPEN, '\n\n');
+  html = html.replace(RE_P_CLOSE, '\n\n');
+  html = html.replace(RE_ANY_TAG, '');
+  html = html.replace(RE_MULTI_NEWLINE, '\n\n');
   html = `${html}\n\n原文链接:[${shuju.url}](${shuju.url})\n\n\n\n`;
   return html.trim();
 }
 
 function tuisong_replace(template, shuju) {
-  // 补全字段
   shuju.catename = shuju.category_name || shuju.catename;
 
   if (shuju.posttime) {
@@ -353,37 +356,41 @@ function tuisong_replace(template, shuju) {
 
   let result = template;
   for (const [key, value] of map) {
-    result = result.replaceAll(key, value ?? '');
+    result = result.split(key).join(value ?? ''); // 兼容低版本无 replaceAll
   }
   return result;
 }
 
-// ------------------------ 运行时状态（状态驱动） ------------------------
+// ------------------------ 运行时状态 ------------------------
 const isDryRun = process.argv.includes('--dry-run');
 if (isDryRun) {
-  logger.info('[DRY-RUN] 仅验证过滤结果,不推送、不写入缓存');
+  logger.info('[DRY-RUN] 仅验证过滤结果，不推送、不写入缓存');
 }
 
-// ------------------------ 服务接口（可插拔） ------------------------
+// ------------------------ 推送接口封装（使用 sendNotify 多通道） ------------------------
 class Notifier {
-  send(title, content) {
+  async send(title, content) {
     if (isDryRun) {
-      logger.info('[DRY-RUN] 跳过推送:', title);
+      logger.info(`[DRY-RUN] 跳过推送: ${title}`);
       return;
     }
-    Promise.resolve(notify.wxPusherNotify(title, content)).catch(err =>
-      logger.error(`推送失败: ${title}`, err.message)
-    );
+    try {
+      await notify.sendNotify(title, content);
+      logger.info(`[PUSH] 成功: ${title}`);
+    } catch (err) {
+      logger.error(`[PUSH] 失败: ${title}`, err.message);
+    }
   }
 }
 
+// ------------------------ 缓存服务 ------------------------
 const DATA_DIR = path.join(__dirname, CACHE_DIR_NAME);
 try {
   if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR);
+    fs.mkdirSync(DATA_DIR, { recursive: true });
   }
 } catch (e) {
-  logger.error('创建缓存目录失败,后续读写可能出错:', e.message);
+  logger.error('创建缓存目录失败，后续读写可能出错:', e.message);
 }
 
 function getFilePath(filename) {
@@ -412,7 +419,7 @@ class CacheService {
       const data = JSON.parse(raw || EMPTY_JSON_ARRAY);
       return Array.isArray(data) ? data : [];
     } catch (e) {
-      logger.error(`JSON解析错误,重置文件 ${this.filePath}:`, e.message);
+      logger.error(`JSON解析错误，重置文件 ${this.filePath}:`, e.message);
       try {
         fs.writeFileSync(this.filePath, EMPTY_JSON_ARRAY, UTF8);
       } catch (writeErr) {
@@ -440,7 +447,7 @@ class CacheService {
       const msgs = this.#parse();
       return new Set(msgs.map(m => m.id));
     } catch (err) {
-      logger.warn('获取缓存锁失败,使用空集合继续:', err.message);
+      logger.warn('获取缓存锁失败，使用空集合继续:', err.message);
       return new Set();
     } finally {
       if (release) {
@@ -495,7 +502,7 @@ function parseResponseBody(body) {
     }
     if (Array.isArray(parsed)) return parsed;
     if (parsed.data && Array.isArray(parsed.data)) return parsed.data;
-    logger.warn('数据格式异常,非列表');
+    logger.warn('数据格式异常，非列表');
     return null;
   } catch (e) {
     logger.error('返回内容不是合法 JSON');
@@ -507,7 +514,7 @@ function parseResponseBody(body) {
 function ensureItemId(item) {
   if (item.id == null) {
     item.id = item.url || `unknown_${Date.now()}_${Math.random()}`;
-    logger.warn('数据缺少 id,使用 url 作为标识');
+    logger.warn('数据缺少 id，使用 url 作为标识');
   }
 }
 
@@ -517,7 +524,7 @@ function ensureItemUrl(item) {
       item.url = domin + item.url;
     }
   } else {
-    logger.warn('数据缺少 url,使用空链接:', item.title);
+    logger.warn('数据缺少 url，使用空链接:', item.title);
     item.url = domin + '/';
   }
 }
@@ -536,16 +543,14 @@ function extractCacheFileName(url) {
   return filename;
 }
 
-// ------------------------ 主流程编排 ------------------------
+// ------------------------ 主流程 ------------------------
 async function main() {
   logger.info('开始获取线报酷数据...');
 
-  // 1. 初始化依赖
   const cacheFileName = extractCacheFileName(fetchUrl);
   const cacheService = new CacheService(cacheFileName);
   const notifier = new Notifier();
 
-  // 2. 获取远端数据
   let list;
   try {
     const response = await got(fetchUrl, {
@@ -555,7 +560,7 @@ async function main() {
     list = parseResponseBody(response.body);
   } catch (error) {
     if (error.response) {
-      logger.error('请求失败,状态码:', error.response.statusCode);
+      logger.error('请求失败，状态码:', error.response.statusCode);
     } else if (error.code === 'ETIMEDOUT') {
       logger.error('请求超时:', error.message);
     } else {
@@ -566,10 +571,8 @@ async function main() {
 
   if (!list) return;
 
-  // 3. 获取已缓存的ID
   const cachedIds = await cacheService.getCachedIds();
 
-  // 4. 处理每条数据（去重、缓存、过滤、推送）
   list.forEach(ensureItemId);
   const newItems = [];
 
@@ -581,26 +584,21 @@ async function main() {
     }
   }
 
-  // 5. 推送与汇总
-  let hebingdata = '';
+  // 推送与日志输出
   for (const item of newItems) {
     ensureItemUrl(item);
-    notifier.send(
+
+    await notifier.send(
       tuisong_replace('【{分类名}】{标题}', item),
       tuisong_replace('<h5>{标题}</h5><br>{Html内容}', item)
     );
 
     console.log('-----------------------------');
     console.log(`发现到新数据:${item.title}【${item.catename}】${item.url}`);
-
-    hebingdata += (hebingdata ? '\n\n' : '') +
-                  tuisong_replace('{标题}【{分类名}】{链接}', item);
   }
 
   console.log('\n\n\n\n*******************************************');
-  console.log(`获取到${list.length}条数据,筛选后的新数据${newItems.length}条,本次任务结束`);
-
-  // 汇总日志（原逻辑无更多输出）
+  console.log(`获取到${list.length}条数据，筛选后的新数据${newItems.length}条，本次任务结束`);
 }
 
 // 启动
