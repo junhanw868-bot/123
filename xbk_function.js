@@ -401,8 +401,104 @@ function getFileName(url) {
     return filename; 
 }
 
+// ---------- 拆分主逻辑，进一步降低认知复杂度 ----------
+
+/** 解析响应体，返回数据数组；若无效则返回 null */
+function parseResponseData(body) {
+    let xbkdata;
+    try {
+        xbkdata = JSON.parse(body);
+    } catch (e) {
+        console.error('返回内容不是合法 JSON');
+        console.error('响应片段:', body.slice(0, 300));
+        return null;
+    }
+    if (!xbkdata) {
+        console.log('警告:服务器返回空数据');
+        return null;
+    }
+    if (Array.isArray(xbkdata)) return xbkdata;
+    if (xbkdata.data && Array.isArray(xbkdata.data)) return xbkdata.data;
+    console.log('数据格式异常,非列表');
+    return null;
+}
+
+/** 获取当前缓存的 id 集合 */
+async function getCurrentCacheIds(cacheFilePath) {
+    let releaseRead = null;
+    try {
+        ensureFileExists(cacheFilePath);
+        releaseRead = await lockFile.lock(cacheFilePath, {
+            retries: { retries: 3, factor: 2, minTimeout: 100, maxTimeout: 500 }
+        });
+        return new Set(readMessages(cacheFilePath).map(m => m.id));
+    } catch (lockErr) {
+        console.warn('获取缓存锁失败,使用空集合继续:', lockErr.message);
+        return new Set();
+    } finally {
+        if (releaseRead) {
+            try { await releaseRead(); } catch (e) { console.error('释放文件锁失败:', e.message); }
+        }
+    }
+}
+
+/** 过滤新数据、写缓存、推送、打印汇总 */
+async function filterAndPushItems(list, cachedIds, cacheFileName) {
+    // 为缺失 id 的数据生成 id
+    list.forEach(item => {
+        if (item.id === undefined || item.id === null) {
+            console.warn('数据缺少 id,使用 url 作为标识');
+            item.id = item.url || `unknown_${Date.now()}_${Math.random()}`;
+        }
+    });
+
+    let items = [];
+    for (const item of list) {
+        if (!cachedIds.has(item.id)) {
+            await appendMessageToFile(item, cacheFileName);
+            if (listfilter(item)) {
+                items.push(item);
+            }
+        }
+    }
+
+    let hebingdata = '';
+    for (const item of items) {
+        if (item.url) {
+            if (!/^https?:\/\//i.test(item.url)) {
+                item.url = domin + item.url;
+            }
+        } else {
+            console.warn('数据缺少 url,使用空链接:', item.title);
+            item.url = domin + '/';
+        }
+
+        if (!DRY_RUN) {
+            try {
+                notify.wxPusherNotify(
+                    tuisong_replace('【{分类名}】{标题}', item),
+                    tuisong_replace('<h5>{标题}</h5><br>{Html内容}', item)
+                );
+            } catch (pushError) {
+                console.error(`推送失败: ${item.title}`, pushError.message);
+            }
+        }
+
+        console.log('-----------------------------');
+        console.log('发现到新数据:' + item.title + '【' + item.catename + '】' + item.url);
+
+        if (hebingdata) hebingdata += '\n\n';
+        hebingdata += tuisong_replace('{标题}【{分类名}】{链接}', item);
+    }
+
+    console.log('\n\n\n\n*******************************************');
+    console.debug(`获取到${list.length}条数据,筛选后的新数据${items.length}条,本次任务结束`);
+    return hebingdata;
+}
+
 console.debug('开始获取线报酷数据...');
 
+// 主流程（极度精简，认知复杂度 < 5）
 (async () => {
     try {
         const response = await got(newUrl, {
@@ -410,110 +506,14 @@ console.debug('开始获取线报酷数据...');
             retry: { limit: REQUEST_RETRY_LIMIT, methods: ['GET'] }
         });
 
-        // ===== 原 .then 里面的全部代码,直接放在这里 =====
-        let xbkdata;
-        try {
-            xbkdata = JSON.parse(response.body);
-        } catch (e) {
-            console.error('返回内容不是合法 JSON');
-            console.error('响应片段:', response.body.slice(0, 300));
-            return;
-        }
-        try {
-            if (!xbkdata) {
-                console.log('警告:服务器返回空数据');
-                return;
-            }
+        const list = parseResponseData(response.body);
+        if (!list) return;
 
-            let list = [];
-            if (Array.isArray(xbkdata)) {
-                list = xbkdata;
-            } else if (xbkdata.data && Array.isArray(xbkdata.data)) {
-                list = xbkdata.data;
-            } else {
-                console.log('数据格式异常,非列表');
-                return;
-            }
+        const cacheFileName = getFileName(newUrl);
+        const cacheFilePath = getFilePath(cacheFileName);
+        const cachedIds = await getCurrentCacheIds(cacheFilePath);
 
-            const cacheFileName = getFileName(newUrl);
-            const cacheFilePath = getFilePath(cacheFileName);
-
-            let cachedIds = new Set();
-            let releaseRead = null;
-            try {
-                ensureFileExists(cacheFilePath);
-                releaseRead = await lockFile.lock(cacheFilePath, {
-                    retries: { retries: 3, factor: 2, minTimeout: 100, maxTimeout: 500 }
-                });
-                cachedIds = new Set(readMessages(cacheFilePath).map(m => m.id));
-            } catch (lockErr) {
-                console.warn('获取缓存锁失败,使用空集合继续:', lockErr.message);
-            } finally {
-                if (releaseRead) {
-                    try { await releaseRead(); } catch (e) { console.error('释放文件锁失败:', e.message); }
-                }
-            }
-
-            list.forEach(item => {
-                if (item.id === undefined || item.id === null) {
-                    console.warn('数据缺少 id,使用 url 作为标识');
-                    item.id = item.url || `unknown_${Date.now()}_${Math.random()}`;
-                }
-            });
-
-            let items = [];
-            for (const item of list) {
-                if (!cachedIds.has(item.id)) {
-                    await appendMessageToFile(item, cacheFileName);
-                    if (listfilter(item)) {  // 已大幅简化，仅传入 item
-                        items.push(item);
-                    }
-                }
-            }
-
-            let hebingdata = '';
-            items.forEach(item => {
-                if (item.url) {
-                    if (!/^https?:\/\//i.test(item.url)) {
-                        item.url = domin + item.url;
-                    }
-                } else {
-                    console.warn('数据缺少 url,使用空链接:', item.title);
-                    item.url = domin + '/';
-                }
-
-                let text = '{标题}{内容}';
-                let desp = '{链接}';
-                text = tuisong_replace(text, item);
-                desp = tuisong_replace(desp, item);
-
-                if (!DRY_RUN) {
-                    try {
-                        notify.wxPusherNotify(
-                            tuisong_replace('【{分类名}】{标题}', item),
-                            tuisong_replace('<h5>{标题}</h5><br>{Html内容}', item)
-                        );
-                    } catch (pushError) {
-                        console.error(`推送失败: ${item.title}`, pushError.message);
-                    }
-                }
-
-                console.log('-----------------------------');
-                console.log('发现到新数据:' + item.title + '【' + item.catename + '】' + item.url);
-
-                if (hebingdata) {
-                    hebingdata += '\n\n';
-                }
-                hebingdata += tuisong_replace('{标题}【{分类名}】{链接}', item);
-            });
-
-            console.log('\n\n\n\n*******************************************');
-            console.debug(`获取到${list.length}条数据,筛选后的新数据${items.length}条,本次任务结束`);
-        } catch (innerError) {
-            console.error('处理数据时发生错误:', innerError);
-        }
-        // ===== 原 .then 代码结束 =====
-
+        await filterAndPushItems(list, cachedIds, cacheFileName);
     } catch (error) {
         if (error.response) {
             console.log('请求失败,状态码:', error.response.statusCode);
