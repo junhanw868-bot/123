@@ -1,5 +1,5 @@
 // ==================== 常量与预编译资源 ====================
-//版本号1.1
+//版本号1.2
 const NEWLINE_REGEX = /[\n\r]/g;             // 预编译正则，资源复用
 const DEFAULT_TIMEOUT = 15000;               // 请求超时，消除魔法数字
 const HITOKOTO_API = 'https://v1.hitokoto.cn/';
@@ -150,7 +150,7 @@ class PushPlusNotifier extends BaseNotifier {
         if (!this.isEnabled()) return;
 
         // 使用预编译正则替换换行，消除重复创建
-        const htmlContent = content.replace(NEWLINE_REGEX, '<br>');
+        const htmlContent = content.replaceAll(NEWLINE_REGEX, '<br>');
 
         const payload = {
             token: this.config.PUSH_PLUS_TOKEN,
