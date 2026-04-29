@@ -9,29 +9,33 @@ const path = require('node:path');
 const lockFile = require('proper-lockfile');
 
 // ------------------------ 常量与日志管理 ------------------------
-// 运行模式：--dry-run 仅验证过滤结果，不推送、不写入缓存
 const DRY_RUN = process.argv.includes('--dry-run');
 if (DRY_RUN) {
   console.log('[DRY-RUN] 仅验证过滤结果,不推送、不写入缓存');
 }
+
+// ----- 魔法值消除：所有固定字符串/数字统一为常量 -----
+const EMPTY_JSON_ARRAY = '[]';
+const UTF8 = 'utf8';
+const CACHE_DIR_NAME = 'xianbaoku_cache';
+const DEFAULT_CACHE_FILENAME = 'push.json';
 
 const MAX_CACHE_SIZE = 100;
 const REQUEST_TIMEOUT_MS = 10000;
 const REQUEST_RETRY_LIMIT = 2;
 const MS_PER_DAY = 86400000;
 
-// 日志级别常量（可按环境调整）
+// 日志级别常量
 const LOG_LEVEL = Object.freeze({ DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 });
 const CURRENT_LOG_LEVEL = LOG_LEVEL.INFO;
 
-// 根据日志级别选择对应的控制台方法（消除嵌套三元）
+// 推送内容模板分隔符（原魔法字符串）
+const CONTENT_BR_SPACER = '<br>&nbsp;<br>&nbsp;<br>';
+const ORIGINAL_LINK_HTML = (url) => `原文链接:<a href="${url}" target="_blank">${url}</a><br>&nbsp;<br>&nbsp;<br>`;
+
 function selectLogFunction(level) {
-  if (level >= LOG_LEVEL.ERROR) {
-    return console.error;
-  }
-  if (level >= LOG_LEVEL.WARN) {
-    return console.warn;
-  }
+  if (level >= LOG_LEVEL.ERROR) return console.error;
+  if (level >= LOG_LEVEL.WARN) return console.warn;
   return console.log;
 }
 
@@ -47,10 +51,9 @@ const logger = {
   error(...args) { this._log(LOG_LEVEL.ERROR, 'ERROR', ...args); }
 };
 
-// 用户配置
+// ------------------------ 配置加载与校验 ------------------------
 const config = require('./xbk_config.json');
 
-// 配置合法性校验
 if (!config.domin?.startsWith('http')) {
   throw new Error('配置错误:domin 必须是合法的 HTTP URL');
 }
@@ -62,7 +65,6 @@ if (
   throw new Error('配置错误:pingbitime 必须是数字或"分类###天数"格式');
 }
 
-// 注意:domin 是原代码的拼写,不要修改为 domain
 const domin = config.domin;
 const pingbifenlei = config.pingbifenlei;
 const pingbibiaoti = config.pingbibiaoti;
@@ -78,8 +80,21 @@ const pingbitime = config.pingbitime;
 
 const newUrl = domin + '/plus/json/push.json';
 
+// ------------------------ 通知发送器（可插拔接口） ------------------------
+// 将通知模块封装为函数，如需替换通知渠道只需修改此函数
+function sendNotification(title, content) {
+  if (DRY_RUN) {
+    logger.info('[DRY-RUN] 跳过推送:', title);
+    return;
+  }
+  try {
+    notify.wxPusherNotify(title, content);
+  } catch (pushError) {
+    logger.error(`推送失败: ${title}`, pushError.message);
+  }
+}
+
 // ------------------------ 正则安全设施 ------------------------
-// 通用安全构造（捕获无效语法，防止崩溃）
 function safeRegExp(pattern, flags) {
   if (!pattern) return null;
   try {
@@ -90,23 +105,19 @@ function safeRegExp(pattern, flags) {
   }
 }
 
-// 转义用户输入以便插入正则
 const ESCAPE_REGEX = /[.*+?^${}()|[\]\\]/g;
 function escapeRegex(string) {
   return string.replaceAll(ESCAPE_REGEX, String.raw`\$&`);
 }
 
-// 用户自定义正则的安全限制
-const MAX_USER_REGEX_LEN = 300;          // 用户正则最大长度（适当放宽以容纳稍长的分支）
-const MAX_MATCH_TARGET_LEN = 5000;       // 匹配目标最大字符数
-// 简易 Evil Regex 检测：量词嵌套模式
+const MAX_USER_REGEX_LEN = 300;
+const MAX_MATCH_TARGET_LEN = 5000;
 const EVIL_PATTERN = /\([^)]*[*+][^)]*\)[*+]|\([^)]*\{[^}]*\}[^)]*\)[*+]/;
 
 function isEvilRegex(pattern) {
   return EVIL_PATTERN.test(pattern);
 }
 
-// 安全构造用户提供的“纯正则模式”（如不在 ### 内）
 function safeUserRegExp(pattern, flags) {
   if (!pattern) return null;
   if (pattern.length > MAX_USER_REGEX_LEN) {
@@ -133,7 +144,6 @@ function daysComputed(time) {
 }
 
 // ------------------------ 正则拆分辅助 ------------------------
-// 按顶层 | 分割正则字符串，避免误拆括号内的 |
 function splitRegexByTopLevelOr(pattern) {
   const branches = [];
   let depth = 0;
@@ -152,7 +162,6 @@ function splitRegexByTopLevelOr(pattern) {
 }
 
 // ------------------------ 规则解析与匹配引擎 ------------------------
-// 解析单条 "分类###值" 规则
 function parseSingleRule(rawPart) {
   const idx = rawPart.indexOf('###');
   if (idx === -1) return null;
@@ -165,31 +174,24 @@ function parseSingleRule(rawPart) {
   };
 }
 
-// 解析配置字符串为规则数组（状态驱动，策略映射）
 function parseRules(configStr) {
   if (!configStr) return [];
-  // 策略：classified 对应 "分类###值" 模式，raw 对应纯正则模式
   const strategies = {
     classified: (str) => str.split(/<br>|\n\n|\r\n/)
                              .filter(Boolean)
                              .map(parseSingleRule)
                              .filter(Boolean),
     raw: (str) => {
-      // 若长度未超限，直接按整体编译（保持原有行为）
       if (str.length <= MAX_USER_REGEX_LEN) {
         const reg = safeUserRegExp(str, 'i');
         return reg ? [{ catRegex: null, valRegex: reg }] : [];
       }
-      // 超长时，按顶层 | 拆分，每个分支单独编译
       const branches = splitRegexByTopLevelOr(str);
       const rules = [];
       for (const branch of branches) {
         const reg = safeUserRegExp(branch, 'i');
-        if (reg) {
-          rules.push({ catRegex: null, valRegex: reg });
-        } else {
-          logger.warn(`忽略非法正则分支: ${branch.substring(0, 50)}…`);
-        }
+        if (reg) rules.push({ catRegex: null, valRegex: reg });
+        else logger.warn(`忽略非法正则分支: ${branch.substring(0, 50)}…`);
       }
       return rules;
     }
@@ -198,7 +200,6 @@ function parseRules(configStr) {
   return strategies[type](configStr);
 }
 
-// 单规则匹配（带目标长度保护）
 function matchesRule(rule, catStr, targetStr) {
   if (!rule.valRegex || !targetStr) return false;
   if (targetStr.length > MAX_MATCH_TARGET_LEN) {
@@ -216,7 +217,6 @@ function matchesRule(rule, catStr, targetStr) {
   return true;
 }
 
-// 任意规则匹配
 function matchesAnyRule(rules, catStr, targetStr) {
   return rules.some(rule => matchesRule(rule, catStr, targetStr));
 }
@@ -239,7 +239,6 @@ function checkTimePingbi(group, pingbitime, catStr) {
   }
   const groupDays = daysComputed(group.louzhuregtime);
 
-  // 分类###天数 模式
   if (/###/.test(pingbitime)) {
     const rules = pingbitime.split(/<br>|\n\n|\r\n/);
     return rules.some(raw => {
@@ -248,15 +247,11 @@ function checkTimePingbi(group, pingbitime, catStr) {
     });
   }
 
-  // 纯数字模式
   const limitDays = Number(pingbitime);
-  if (!Number.isNaN(limitDays)) {
-    return limitDays > groupDays;
-  }
-  return false;
+  return !Number.isNaN(limitDays) && limitDays > groupDays;
 }
 
-// ------------------------ 预编译所有规则 ------------------------
+// ------------------------ 预编译所有规则（资源复用） ------------------------
 const RULES = {
   zhanxianlouzhu: parseRules(zhanxianlouzhu),
   pingbilouzhu: parseRules(pingbilouzhu),
@@ -282,37 +277,36 @@ function isBlockedByField(rules, catStr, targetStr, retainConditions) {
   return matchesAnyRule(rules, catStr, targetStr);
 }
 
-// ------------------------ 主过滤函数 ------------------------
+// ------------------------ 主过滤函数（增加顶层防御） ------------------------
 function listfilter(group) {
+  // 新增：防御 null/undefined 输入，局部容错不倒
+  if (!group || typeof group !== 'object') {
+    logger.warn('listfilter 接收到无效 group，已忽略');
+    return false;
+  }
+
   const catStr = typeof group.catename === 'string' ? group.catename : null;
   const louzhuStr = typeof group.louzhu === 'string' ? group.louzhu : null;
   const titleStr = typeof group.title === 'string' ? group.title : null;
   const contentStr = typeof group.content === 'string' ? group.content : null;
 
-  // 1. 时间屏蔽
   if (checkTimePingbi(group, pingbitime, catStr)) return false;
-
-  // 2. 分类屏蔽（可选链已在 safeRegExp 返回 null 时处理，test 调用安全）
   if (catStr && pingbifenleiReg?.test?.(catStr)) return false;
 
-  // 3. 各字段保留状态
   const louzhuRetain = isRetainedByField(RULES.zhanxianlouzhu, catStr, louzhuStr);
   const titleRetain = isRetainedByField(RULES.zhanxianbiaoti, catStr, titleStr);
   const contentRetain = isRetainedByField(RULES.zhanxianneirong, catStr, contentStr);
 
-  // 4. 楼主屏蔽
   if (
     isBlockedByField(RULES.pingbilouzhu, catStr, louzhuStr, [louzhuRetain]) ||
     isBlockedByField(RULES.pingbilouzhuplus, catStr, louzhuStr, [louzhuRetain])
   ) return false;
 
-  // 5. 标题屏蔽（受 louzhu 保留影响）
   if (
     isBlockedByField(RULES.pingbibiaoti, catStr, titleStr, [louzhuRetain, titleRetain]) ||
     isBlockedByField(RULES.pingbibiaotiplus, catStr, titleStr, [louzhuRetain])
   ) return false;
 
-  // 6. 内容屏蔽（受 louzhu 和 title 保留影响）
   if (
     isBlockedByField(RULES.pingbineirong, catStr, contentStr, [
       louzhuRetain, titleRetain, contentRetain
@@ -323,7 +317,7 @@ function listfilter(group) {
   return true;
 }
 
-// ------------------------ 推送内容组装 ------------------------
+// ------------------------ 推送内容组装（魔法值消除） ------------------------
 function add0(m) { return m < 10 ? '0' + m : m; }
 
 function tuisong_replace(text, shuju) {
@@ -335,7 +329,7 @@ function tuisong_replace(text, shuju) {
     shuju.shorttime = `${posttime.getHours()}:${add0(posttime.getMinutes())}`;
   }
 
-  const content_html = `${shuju.content_html || ''}<br>&nbsp;<br>&nbsp;<br>原文链接:<a href="${shuju.url}" target="_blank">${shuju.url}</a><br>&nbsp;<br>&nbsp;<br>`;
+  const content_html = `${shuju.content_html || ''}${CONTENT_BR_SPACER}${ORIGINAL_LINK_HTML(shuju.url)}`;
 
   const replacements = {
     '{标题}': shuju.title,
@@ -361,26 +355,37 @@ function tuisong_replace(text, shuju) {
   return text;
 }
 
+// ----- 预编译 html 转 markdown 用到的正则（提升性能） -----
+const RE_H = /<h([1-6])>(.*?)<\/h\1>/gi;
+const RE_A = /<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+const RE_IMG_ALT = /<img[^>]+src="([^"]+)"[^>]*alt="([^"]*)"[^>]*>/gi;
+const RE_IMG = /<img[^>]+src="([^"]+)"[^>]*>/gi;
+const RE_BR = /<br\s*\/?>/gi;
+const RE_P_OPEN = /<p[^>]*>/gi;
+const RE_P_CLOSE = /<\/p>/gi;
+const RE_ANY_TAG = /<[^>]+>/g;
+const RE_MULTI_NEWLINE = /\n{3,}/g;
+
 function htmlToMarkdown(shuju) {
   let html = shuju.content_html ? shuju.content_html : '';
 
-  html = html.replaceAll(/<h([1-6])>(.*?)<\/h\1>/gi, (_, level, content) =>
+  html = html.replaceAll(RE_H, (_, level, content) =>
     '#'.repeat(Number(level)) + ' ' + content + '\n\n'
   );
-  html = html.replaceAll(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
-  html = html.replaceAll(/<img[^>]+src="([^"]+)"[^>]*alt="([^"]*)"[^>]*>/gi, '\n\n![$2]($1)\n\n');
-  html = html.replaceAll(/<img[^>]+src="([^"]+)"[^>]*>/gi, '\n\n![]($1)\n\n');
-  html = html.replaceAll(/<br\s*\/?>/gi, '\n\n');
-  html = html.replaceAll(/<p[^>]*>/gi, '\n\n');
-  html = html.replaceAll(/<\/p>/gi, '\n\n');
-  html = html.replaceAll(/<[^>]+>/g, '');
-  html = html.replaceAll(/\n{3,}/g, '\n\n');
+  html = html.replaceAll(RE_A, '[$2]($1)');
+  html = html.replaceAll(RE_IMG_ALT, '\n\n![$2]($1)\n\n');
+  html = html.replaceAll(RE_IMG, '\n\n![]($1)\n\n');
+  html = html.replaceAll(RE_BR, '\n\n');
+  html = html.replaceAll(RE_P_OPEN, '\n\n');
+  html = html.replaceAll(RE_P_CLOSE, '\n\n');
+  html = html.replaceAll(RE_ANY_TAG, '');
+  html = html.replaceAll(RE_MULTI_NEWLINE, '\n\n');
   html = `${html}\n\n原文链接:[${shuju.url}](${shuju.url})\n\n\n\n`;
   return html.trim();
 }
 
-// ------------------------ 缓存与文件管理 ------------------------
-const DATA_DIR = path.join(__dirname, 'xianbaoku_cache');
+// ------------------------ 缓存与文件管理（魔法值消除） ------------------------
+const DATA_DIR = path.join(__dirname, CACHE_DIR_NAME);
 try {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR);
@@ -396,7 +401,7 @@ function getFilePath(filename) {
 function ensureFileExists(filePath) {
   if (!fs.existsSync(filePath)) {
     try {
-      fs.writeFileSync(filePath, '[]', 'utf8');
+      fs.writeFileSync(filePath, EMPTY_JSON_ARRAY, UTF8);
     } catch (err) {
       logger.error(`无法创建缓存文件 ${filePath}:`, err.message);
     }
@@ -406,12 +411,12 @@ function ensureFileExists(filePath) {
 function fixJsonFile(filePath) {
   ensureFileExists(filePath);
   try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    JSON.parse(content || '[]');
+    const content = fs.readFileSync(filePath, UTF8);
+    JSON.parse(content || EMPTY_JSON_ARRAY);
   } catch (error) {
     logger.error(`JSON解析错误,重置文件 ${filePath}:`, error.message);
     try {
-      fs.writeFileSync(filePath, '[]', 'utf8');
+      fs.writeFileSync(filePath, EMPTY_JSON_ARRAY, UTF8);
     } catch (writeErr) {
       logger.error(`无法重置缓存文件 ${filePath}:`, writeErr.message);
     }
@@ -421,8 +426,8 @@ function fixJsonFile(filePath) {
 function readMessages(filePath) {
   try {
     fixJsonFile(filePath);
-    const data = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(data || '[]');
+    const data = fs.readFileSync(filePath, UTF8);
+    return JSON.parse(data || EMPTY_JSON_ARRAY);
   } catch (error) {
     logger.error(`读取消息失败 ${filePath}:`, error.message);
     return [];
@@ -434,7 +439,7 @@ function stringifySafe(obj) {
     return JSON.stringify(obj, null, 2);
   } catch (error) {
     logger.error('无法序列化对象:', error.message);
-    return '[]';
+    return EMPTY_JSON_ARRAY;
   }
 }
 
@@ -466,7 +471,7 @@ async function appendMessageToFile(message, filename) {
       messages.splice(0, messages.length - MAX_CACHE_SIZE);
     }
 
-    fs.writeFileSync(filePath, stringifySafe(messages), 'utf8');
+    fs.writeFileSync(filePath, stringifySafe(messages), UTF8);
   } catch (error) {
     logger.error(`写入缓存失败 [${filename}]:`, error.message);
   } finally {
@@ -490,7 +495,7 @@ function getFileName(url) {
     filename = parts[parts.length - 1];
   }
   if (!filename?.endsWith('.json')) {
-    filename = (filename || 'push') + '.json';
+    filename = (filename || DEFAULT_CACHE_FILENAME) + '.json';
   }
   return filename;
 }
@@ -503,7 +508,7 @@ function parseResponseData(body) {
   } catch (e) {
     logger.error('返回内容不是合法 JSON');
     logger.error('响应片段:', body.slice(0, 300));
-    throw e; // 保持上层捕获
+    throw e;
   }
   if (!xbkdata) {
     logger.warn('警告:服务器返回空数据');
@@ -555,6 +560,16 @@ function ensureItemUrl(item) {
   }
 }
 
+// ----- 单条过滤安全包裹（局部容错不倒） -----
+function safeFilterItem(item) {
+  try {
+    return listfilter(item);
+  } catch (e) {
+    logger.error(`过滤单条数据异常 (${item.id || item.title}): ${e.message}`);
+    return false; // 异常时不推送
+  }
+}
+
 async function filterAndPushItems(list, cachedIds, cacheFileName) {
   list.forEach(ensureItemId);
 
@@ -562,7 +577,7 @@ async function filterAndPushItems(list, cachedIds, cacheFileName) {
   for (const item of list) {
     if (!cachedIds.has(item.id)) {
       await appendMessageToFile(item, cacheFileName);
-      if (listfilter(item)) {
+      if (safeFilterItem(item)) {    // 使用安全包裹替代直接调用 listfilter
         newItems.push(item);
       }
     }
@@ -571,17 +586,10 @@ async function filterAndPushItems(list, cachedIds, cacheFileName) {
   let hebingdata = '';
   for (const item of newItems) {
     ensureItemUrl(item);
-
-    if (!DRY_RUN) {
-      try {
-        notify.wxPusherNotify(
-          tuisong_replace('【{分类名}】{标题}', item),
-          tuisong_replace('<h5>{标题}</h5><br>{Html内容}', item)
-        );
-      } catch (pushError) {
-        logger.error(`推送失败: ${item.title}`, pushError.message);
-      }
-    }
+    sendNotification(
+      tuisong_replace('【{分类名}】{标题}', item),
+      tuisong_replace('<h5>{标题}</h5><br>{Html内容}', item)
+    );
 
     console.log('-----------------------------');
     console.log(`发现到新数据:${item.title}【${item.catename}】${item.url}`);
@@ -605,7 +613,7 @@ logger.info('开始获取线报酷数据...');
     });
 
     const list = parseResponseData(response.body);
-    if (!list) return; // 空数据直接结束
+    if (!list) return;
 
     const cacheFileName = getFileName(newUrl);
     const cacheFilePath = getFilePath(cacheFileName);
