@@ -3,9 +3,9 @@
 // 用户配置区域开始 ********************************* // 版本号:DeepSeek6
 
 const notify = require('./xbk_sendNotify');
-const fs = require('fs');
+const fs = require('node:fs');
 const got = require('got');
-const path = require('path');
+const path = require('node:path');
 const lockFile = require('proper-lockfile');
 
 const DRY_RUN = process.argv.includes('--dry-run');
@@ -21,7 +21,7 @@ const MS_PER_DAY = 86400000;
 const config = require('./xbk_config.json');
 
 // 配置合法性校验
-if (!config.domin || !config.domin.startsWith('http')) {
+if (!config.domin?.startsWith('http')) {
   throw new Error('配置错误:domin 必须是合法的 HTTP URL');
 }
 if (
@@ -243,9 +243,7 @@ function add0(m) {
 }
 
 function tuisong_replace(text, shuju) {
-  if (shuju.category_name) {
-    shuju.catename = shuju.category_name;
-  }
+  shuju.catename = shuju.category_name || shuju.catename;
 
   if (shuju.posttime) {
     const posttime = new Date(shuju.posttime * 1000);
@@ -467,7 +465,7 @@ async function getCurrentCacheIds(cacheFilePath) {
 }
 
 function ensureItemId(item) {
-  if (item.id === undefined || item.id === null) {
+  if (item.id == null) {
     console.warn('数据缺少 id,使用 url 作为标识');
     item.id = item.url || `unknown_${Date.now()}_${Math.random()}`;
   }
