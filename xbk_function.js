@@ -1,14 +1,17 @@
 'use strict';
 
 // ======================== 用户配置区域 ======================== //
-// 版本号: v4.5
+// 版本号: v4.5.1
 
 /**
  * 更新日志:
  *
+ * v4.5.1 (2026-04-29)
+ * - 🔧 紧急修复：ensureItemId 因 item.id 可能为数字而导致 startsWith 崩溃，回归 v4.3 逻辑，
+ *   仅在 id == null 时生成缺省值，不再检查 id 格式，确保与数字 id 兼容
+ *
  * v4.5 (2026-04-29)
  * - 根据代码分析建议，将 String.prototype.match() 替换为 RegExp.prototype.exec()
- *   提升正则匹配的可预测性，避免全局标志干扰
  *
  * v4.4 (2026-04-29)
  * - 移除 proper-lockfile 依赖，改为直接同步文件读写，彻底兼容青龙面板
@@ -17,7 +20,6 @@
  * - 使用 flatMap 替代 map().filter(Boolean) 消除中间 null 值
  * - 使用 ??= 逻辑赋值简化默认 id 生成
  * - 统一使用可选链 (?.) 和空值合并 (??) 增强健壮性
- * - 移除无用锁文件代码，减少文件 I/O 错误风险
  *
  * v4.3 (旧版)
  * - 原始版本
@@ -144,13 +146,12 @@ function safeUserRegExp(pattern, flags) {
 
 function daysComputed(dateStr) {
     if (!dateStr || typeof dateStr !== 'string') return Infinity;
-    // 使用 RegExp.exec() 替代 String.match()，避免全局标志副作用
     const match = /^\d{4}-\d{2}-\d{2}/.exec(dateStr);
     if (!match) return Infinity;
     const [y, m, d] = match[0].split('-').map(Number);
-    const targetDate = new Date(y, m - 1, d);          // 本地日期
+    const targetDate = new Date(y, m - 1, d);
     const today = new Date();
-    const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate()); // 本地今天 0 时
+    const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     const diff = todayDate - targetDate;
     return diff >= 0 ? Math.floor(diff / MS_PER_DAY) : 0;
 }
@@ -195,7 +196,6 @@ function parseRules(configStr) {
             .map(parseSingleRule)
             .filter(Boolean);
     }
-    // 原始正则模式
     if (configStr.length <= MAX_USER_REGEX_LEN) {
         const reg = safeUserRegExp(configStr, 'i');
         return reg ? [{ catRegex: null, valRegex: reg }] : [];
@@ -205,7 +205,7 @@ function parseRules(configStr) {
         const reg = safeUserRegExp(branch, 'i');
         if (reg) return [{ catRegex: null, valRegex: reg }];
         logger.warn(`忽略非法正则分支: ${branch.substring(0, 50)}...`);
-        return [];   // flatMap 自动跳过空数组
+        return [];
     });
 }
 
@@ -243,7 +243,6 @@ function parseTimeRule(rawRule) {
     if (!catPattern || Number.isNaN(days)) return null;
     const catRegex = safeRegExp(escapeRegex(catPattern), 'i');
     if (!catRegex) return null;
-    // 返回检查函数
     return (catStr, groupDays) => catStr && catRegex.test(catStr) && days > groupDays;
 }
 
@@ -470,13 +469,11 @@ class CacheService {
         }
     }
 
-    // 返回已缓存的 id 集合（同步，无锁）
     getCachedIds() {
         const msgs = this.#parse();
         return new Set(msgs.map(m => m.id));
     }
 
-    // 添加/更新条目（同步，无锁）
     addItem(item) {
         if (isDryRun) {
             logger.info(`[DRY-RUN] 跳过写入缓存: ${item.id} - ${item.title}`);
@@ -521,9 +518,10 @@ function parseResponseBody(body) {
     }
 }
 
+// 🔧 修复：仅处理缺失 id，不对 id 类型做任何假设
 function ensureItemId(item) {
-    item.id ??= item.url || `unknown_${Date.now()}_${Math.random()}`;
-    if (!item.id.startsWith('http')) {
+    if (item.id == null) {
+        item.id = item.url || `unknown_${Date.now()}_${Math.random()}`;
         logger.warn('数据缺少 id，使用 url 作为标识');
     }
 }
@@ -582,19 +580,18 @@ async function main() {
 
     if (!list) return;
 
-    const cachedIds = cacheService.getCachedIds();   // 同步获取
+    const cachedIds = cacheService.getCachedIds();
     list.forEach(ensureItemId);
 
     const newItems = [];
     for (const item of list) {
         if (cachedIds.has(item.id)) continue;
-        cacheService.addItem(item);                  // 同步写入
+        cacheService.addItem(item);
         if (safeFilterItem(item)) {
             newItems.push(item);
         }
     }
 
-    // 推送与日志输出
     for (const item of newItems) {
         ensureItemUrl(item);
         await notifier.send(
@@ -609,7 +606,6 @@ async function main() {
     console.log(`获取到${list.length}条数据，筛选后的新数据${newItems.length}条，本次任务结束`);
 }
 
-// 启动
 main().catch(err => {
     logger.error('程序异常退出:', err);
     process.exit(1);
