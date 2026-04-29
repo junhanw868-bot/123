@@ -1,10 +1,14 @@
 'use strict';
 
 // ======================== 用户配置区域 ======================== //
-// 版本号: v4.4
+// 版本号: v4.5
 
 /**
  * 更新日志:
+ *
+ * v4.5 (2026-04-29)
+ * - 根据代码分析建议，将 String.prototype.match() 替换为 RegExp.prototype.exec()
+ *   提升正则匹配的可预测性，避免全局标志干扰
  *
  * v4.4 (2026-04-29)
  * - 移除 proper-lockfile 依赖，改为直接同步文件读写，彻底兼容青龙面板
@@ -140,8 +144,8 @@ function safeUserRegExp(pattern, flags) {
 
 function daysComputed(dateStr) {
     if (!dateStr || typeof dateStr !== 'string') return Infinity;
-    // 提取 yyyy-MM-dd 格式的日期部分
-    const match = dateStr.match(/^\d{4}-\d{2}-\d{2}/);
+    // 使用 RegExp.exec() 替代 String.match()，避免全局标志副作用
+    const match = /^\d{4}-\d{2}-\d{2}/.exec(dateStr);
     if (!match) return Infinity;
     const [y, m, d] = match[0].split('-').map(Number);
     const targetDate = new Date(y, m - 1, d);          // 本地日期
@@ -578,7 +582,7 @@ async function main() {
 
     if (!list) return;
 
-    const cachedIds = cacheService.getCachedIds();   // 同步获取，仍可 await（自动包装）
+    const cachedIds = cacheService.getCachedIds();   // 同步获取
     list.forEach(ensureItemId);
 
     const newItems = [];
