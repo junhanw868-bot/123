@@ -1,4 +1,5 @@
 // ==================== 常量与预编译资源 ====================
+//版本号1.1
 const NEWLINE_REGEX = /[\n\r]/g;             // 预编译正则，资源复用
 const DEFAULT_TIMEOUT = 15000;               // 请求超时，消除魔法数字
 const HITOKOTO_API = 'https://v1.hitokoto.cn/';
@@ -19,14 +20,14 @@ const httpClient = {
             // 局部容错：只抛出可读错误，不中断全局
             throw err?.response?.body || err;
         });
-        return safeParseJSON(response.body);
+        return safeParseJSON(response?.body);
     },
 
     async get(url) {
         const response = await got.get(url, { timeout: DEFAULT_TIMEOUT }).catch(err => {
             throw err?.response?.body || err;
         });
-        return safeParseJSON(response.body);
+        return safeParseJSON(response?.body);
     }
 };
 
@@ -56,7 +57,7 @@ function normalizeConfig(raw) {
 class HitokotoService {
     static async fetch() {
         const data = await httpClient.get(HITOKOTO_API);
-        return `${data.hitokoto}    ----${data.from}`;
+        return `${data?.hitokoto}    ----${data?.from}`;
     }
 }
 
@@ -94,7 +95,7 @@ class WxPusherNotifier extends BaseNotifier {
 
         try {
             const data = await httpClient.post(WXPUSHER_API, payload);
-            if (data.code === 1000) {
+            if (data?.code === 1000) {
                 console.log('[WxPusher] 发送成功');
             } else {
                 console.warn('[WxPusher] 发送异常', data);
@@ -160,11 +161,11 @@ class PushPlusNotifier extends BaseNotifier {
 
         try {
             const data = await httpClient.post(PUSHPLUS_API, payload);
-            if (data.code === 200) {
+            if (data?.code === 200) {
                 const mode = this.config.PUSH_PLUS_USER ? '一对多' : '一对一';
                 console.log(`[PushPlus] ${mode} 发送成功`);
             } else {
-                console.warn(`[PushPlus] 发送异常`, data.msg);
+                console.warn(`[PushPlus] 发送异常`, data?.msg);
             }
         } catch (err) {
             console.error('[PushPlus] 发送失败', err);
@@ -184,9 +185,9 @@ class NotifyManager {
     }
 
     async send(title, content, params = {}) {
-        // 跳过推送逻辑（平铺直叙）
+        // 使用可选链防御，更简洁安全
         const skipList = process.env.SKIP_PUSH_TITLE;
-        if (skipList && skipList.split('\n').includes(title)) {
+        if (skipList?.split('\n')?.includes(title)) {
             console.info(`[Notify] ${title} 位于跳过列表，已跳过`);
             return;
         }
