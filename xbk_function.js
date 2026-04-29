@@ -199,8 +199,8 @@ function listfilter(group) {
   // 1. 时间屏蔽
   if (checkTimePingbi(group, pingbitime, catStr)) return false;
 
-  // 2. 分类屏蔽
-  if (catStr && pingbifenleiReg && pingbifenleiReg.test(catStr)) return false;
+  // 2. 分类屏蔽（使用可选链，保持 catStr 真值检查）
+  if (catStr && pingbifenleiReg?.test?.(catStr)) return false;
 
   // 3. 各字段保留状态
   const louzhuRetain = isRetainedByField(RULES.zhanxianlouzhu, catStr, louzhuStr);
@@ -415,7 +415,8 @@ function getFileName(url) {
     const parts = url.split('/');
     filename = parts[parts.length - 1];
   }
-  if (!filename || !filename.endsWith('.json')) {
+  // 使用可选链简化校验
+  if (!filename?.endsWith('.json')) {
     filename = (filename || 'push') + '.json';
   }
   return filename;
