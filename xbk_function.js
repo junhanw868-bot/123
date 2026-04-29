@@ -59,12 +59,11 @@ function safeRegExp(pattern, flags) {
   }
 }
 
-// ---------- 修复1：提取正则常量，避免重复创建和双重转义 ----------
+// ---------- 修复1：提取正则常量，使用 replaceAll + String.raw 消除转义警告 ----------
 const ESCAPE_REGEX = /[.*+?^${}()|[\]\\]/g;
 
-// 转义正则特殊字符,用于动态拼接用户输入
 function escapeRegex(string) {
-  return string.replace(ESCAPE_REGEX, '\\$&');
+  return string.replaceAll(ESCAPE_REGEX, String.raw`\$&`);
 }
 
 // 正则预编译(使用安全构造) —— 仅保留分类屏蔽正则，其他统一用规则数组
@@ -430,6 +429,7 @@ function getFileName(url) {
 
 // ---------- 主流程辅助 ----------
 
+// ---------- 修复5：捕获 JSON 解析异常后记录并重新抛出，避免“吞掉”异常 ----------
 function parseResponseData(body) {
   let xbkdata;
   try {
@@ -437,7 +437,7 @@ function parseResponseData(body) {
   } catch (e) {
     console.error('返回内容不是合法 JSON');
     console.error('响应片段:', body.slice(0, 300));
-    return null;
+    throw e; // 重新抛出，由上层统一处理
   }
   if (!xbkdata) {
     console.log('警告:服务器返回空数据');
@@ -538,7 +538,7 @@ console.debug('开始获取线报酷数据...');
     });
 
     const list = parseResponseData(response.body);
-    if (!list) return;
+    if (!list) return; // 空数据或格式异常，直接结束（不会触发异常）
 
     const cacheFileName = getFileName(newUrl);
     const cacheFilePath = getFilePath(cacheFileName);
@@ -546,6 +546,7 @@ console.debug('开始获取线报酷数据...');
 
     await filterAndPushItems(list, cachedIds, cacheFileName);
   } catch (error) {
+    // 网络、JSON 解析或其他未处理异常统一捕获
     if (error.response) {
       console.log('请求失败,状态码:', error.response.statusCode);
     } else if (error.code === 'ETIMEDOUT') {
