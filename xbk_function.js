@@ -24,12 +24,21 @@ const MS_PER_DAY = 86400000;
 const LOG_LEVEL = Object.freeze({ DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 });
 const CURRENT_LOG_LEVEL = LOG_LEVEL.INFO;
 
+// 根据日志级别选择对应的控制台方法（消除嵌套三元）
+function selectLogFunction(level) {
+  if (level >= LOG_LEVEL.ERROR) {
+    return console.error;
+  }
+  if (level >= LOG_LEVEL.WARN) {
+    return console.warn;
+  }
+  return console.log;
+}
+
 const logger = {
   _log(level, prefix, ...args) {
     if (level < CURRENT_LOG_LEVEL) return;
-    const fn = level >= LOG_LEVEL.ERROR ? console.error
-             : level >= LOG_LEVEL.WARN  ? console.warn
-             : console.log;
+    const fn = selectLogFunction(level);
     fn(`[${prefix}]`, ...args);
   },
   debug(...args) { this._log(LOG_LEVEL.DEBUG, 'DEBUG', ...args); },
