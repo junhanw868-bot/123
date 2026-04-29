@@ -143,7 +143,8 @@ class PushPlusNotifier extends BaseNotifier {
         const { PUSH_PLUS_TOKEN, PUSH_PLUS_USER } = this.config;
         if (!this.isEnabled()) return;
 
-        const htmlContent = content.replace(/[\n\r]/g, '<br>');
+        // ✅ 修改点 1：使用 replaceAll 替代 replace（正则仍需 /g 标志）
+        const htmlContent = content.replaceAll(/[\n\r]/g, '<br>');
         const payload = {
             token: PUSH_PLUS_TOKEN,
             title: title,
@@ -176,9 +177,9 @@ class NotifyManager {
     }
 
     async send(title, content, params = {}) {
-        // 跳过环境变量指定的标题
+        // ✅ 修改点 2：使用可选链简化判空逻辑
         const skipTitle = process.env.SKIP_PUSH_TITLE;
-        if (skipTitle && skipTitle.split('\n').includes(title)) {
+        if (skipTitle?.split('\n').includes(title)) {
             console.info(`${title} 在 SKIP_PUSH_TITLE 中，跳过推送`);
             return;
         }
