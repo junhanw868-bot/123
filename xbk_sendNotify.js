@@ -87,10 +87,10 @@ function wxPusherNotify(text, desp) {
             $.post(options, (err, resp, data) => {
                 try {
                     if (err) {
-                        console.log('WxPusher发送通知消息失败😞\n', err);
+                        console.log('WxPusher发送通知消息失败\n', err);
                     } else {
                         if (data.code === 1000) {
-                            console.log('WxPusher发送通知消息成功🎉。\n');
+                            console.log('WxPusher发送通知消息成功。\n');
                         } else {
                             console.log(`WxPusher发送通知消息异常\n`);
                             console.log(data);
@@ -143,10 +143,10 @@ function pushMeNotify(text, desp, params = {}) {
                 $.post(options, (err, resp, data) => {
                     try {
                         if (err) {
-                            console.log(`PushMe 发送通知到 KEY ${trimmedKey} 失败😞\n`, err);
+                            console.log(`PushMe 发送通知到 KEY ${trimmedKey} 失败\n`, err);
                         } else {
                             if (data === 'success') {
-                                console.log(`PushMe 发送通知到 KEY ${trimmedKey} 成功🎉\n`);
+                                console.log(`PushMe 发送通知到 KEY ${trimmedKey} 成功\n`);
                             } else {
                                 console.log(`PushMe 发送通知到 KEY ${trimmedKey} 异常: ${data}\n`);
                             }
@@ -188,13 +188,13 @@ function pushPlusNotify(text, desp) {
                 try {
                     if (err) {
                         console.log(
-                            `Push+ 发送${PUSH_PLUS_USER ? '一对多' : '一对一'}通知消息失败😞\n`,
+                            `Push+ 发送${PUSH_PLUS_USER ? '一对多' : '一对一'}通知消息失败\n`,
                             err,
                         );
                     } else {
                         if (data.code === 200) {
                             console.log(
-                                `Push+ 发送${PUSH_PLUS_USER ? '一对多' : '一对一'}通知消息完成🎉\n`,
+                                `Push+ 发送${PUSH_PLUS_USER ? '一对多' : '一对一'}通知消息完成\n`,
                             );
                         } else {
                             console.log(
