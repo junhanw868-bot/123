@@ -1,7 +1,7 @@
 // ==================== 常量与预编译资源 ====================
-//版本号1.2
-const NEWLINE_REGEX = /[\n\r]/g;             // 预编译正则，资源复用
-const DEFAULT_TIMEOUT = 15000;               // 请求超时，消除魔法数字
+// 版本号 1.3
+const NEWLINE_REGEX = /[\n\r]/g;
+const DEFAULT_TIMEOUT = 15000;
 const HITOKOTO_API = 'https://v1.hitokoto.cn/';
 const WXPUSHER_API = 'https://wxpusher.zjiecode.com/api/send/message';
 const PUSHPLUS_API = 'https://www.pushplus.plus/send';
@@ -17,7 +17,6 @@ const httpClient = {
             headers: { 'Content-Type': 'application/json', ...headers },
             timeout: DEFAULT_TIMEOUT,
         }).catch(err => {
-            // 局部容错：只抛出可读错误，不中断全局
             throw err?.response?.body || err;
         });
         return safeParseJSON(response?.body);
@@ -31,7 +30,7 @@ const httpClient = {
     }
 };
 
-// 安全 JSON 解析，消除异常中断
+// 安全 JSON 解析
 function safeParseJSON(raw) {
     try {
         return JSON.parse(raw);
@@ -40,10 +39,10 @@ function safeParseJSON(raw) {
     }
 }
 
-// ================== 配置验证与规范化 ==================
+// ================== 配置规范化 ==================
 function normalizeConfig(raw) {
     return {
-        HITOKOTO: raw.HITOKOTO !== 'false', // 字符串转布尔，语义明确
+        HITOKOTO: raw.HITOKOTO !== 'false',
         WX_pusher_appToken: raw.WX_pusher_appToken || '',
         WX_pusher_topicIds: raw.WX_pusher_topicIds || '',
         PUSHME_URL: raw.PUSHME_URL || DEFAULT_PUSHME_URL,
@@ -57,18 +56,18 @@ function normalizeConfig(raw) {
 class HitokotoService {
     static async fetch() {
         const data = await httpClient.get(HITOKOTO_API);
-        return `${data?.hitokoto}    ----${data?.from}`;
+        return `${data?.hitokoto ?? ''}    ----${data?.from ?? ''}`;
     }
 }
 
-// ==================== 推送器基类（接口契约） ====================
+// ==================== 推送器基类 ====================
 class BaseNotifier {
     constructor(config) {
         this.config = config;
     }
 
     isEnabled() {
-        return false; // 子类必须重写
+        return false;
     }
 
     async notify(title, content, params = {}) {
@@ -76,10 +75,10 @@ class BaseNotifier {
     }
 }
 
-// ------------------ WxPusher 推送器 ------------------
+// ------------------ WxPusher ------------------
 class WxPusherNotifier extends BaseNotifier {
     isEnabled() {
-        return Boolean(this.config.WX_pusher_appToken);
+        return Boolean(this.config.WX_pusher_appToken && this.config.WX_pusher_topicIds);
     }
 
     async notify(title, content) {
@@ -88,7 +87,7 @@ class WxPusherNotifier extends BaseNotifier {
         const payload = {
             appToken: this.config.WX_pusher_appToken,
             content,
-            summary: title.substring(0, 90),
+            summary: (title ?? '').substring(0, 90),
             contentType: 2,
             topicIds: [this.config.WX_pusher_topicIds],
         };
@@ -106,7 +105,7 @@ class WxPusherNotifier extends BaseNotifier {
     }
 }
 
-// ------------------ PushMe 推送器 ------------------
+// ------------------ PushMe ------------------
 class PushMeNotifier extends BaseNotifier {
     isEnabled() {
         return Boolean(this.config.PUSHME_KEY);
@@ -140,7 +139,7 @@ class PushMeNotifier extends BaseNotifier {
     }
 }
 
-// ------------------ PushPlus 推送器 ------------------
+// ------------------ PushPlus ------------------
 class PushPlusNotifier extends BaseNotifier {
     isEnabled() {
         return Boolean(this.config.PUSH_PLUS_TOKEN);
@@ -149,8 +148,8 @@ class PushPlusNotifier extends BaseNotifier {
     async notify(title, content) {
         if (!this.isEnabled()) return;
 
-        // 使用预编译正则替换换行，消除重复创建
-        const htmlContent = content.replaceAll(NEWLINE_REGEX, '<br>');
+        // 兼容旧版 Node，使用 replace 代替 replaceAll
+        const htmlContent = content.replace(NEWLINE_REGEX, '<br>');
 
         const payload = {
             token: this.config.PUSH_PLUS_TOKEN,
@@ -173,7 +172,7 @@ class PushPlusNotifier extends BaseNotifier {
     }
 }
 
-// ==================== 通知管理器（组装与调度） ====================
+// ==================== 通知管理器 ====================
 class NotifyManager {
     constructor(rawConfig) {
         this.config = normalizeConfig(rawConfig);
@@ -185,14 +184,14 @@ class NotifyManager {
     }
 
     async send(title, content, params = {}) {
-        // 使用可选链防御，更简洁安全
+        // 跳过列表检查
         const skipList = process.env.SKIP_PUSH_TITLE;
         if (skipList?.split('\n')?.includes(title)) {
             console.info(`[Notify] ${title} 位于跳过列表，已跳过`);
             return;
         }
 
-        // 附加一言内容
+        // 附加一言
         let finalContent = content;
         if (this.config.HITOKOTO) {
             try {
@@ -203,42 +202,52 @@ class NotifyManager {
             }
         }
 
-        // 筛选启用的推送器，并发推送，局部失败不影响全局
-        const tasks = this.notifiers
-            .filter(notifier => notifier.isEnabled())
-            .map(notifier => notifier.notify(title, finalContent, params));
+        const enabledNotifiers = this.notifiers.filter(n => n.isEnabled());
+        if (enabledNotifiers.length === 0) {
+            console.warn('[Notify] 无任何推送渠道启用，请检查配置');
+            return;
+        }
 
+        const tasks = enabledNotifiers.map(n => n.notify(title, finalContent, params));
         await Promise.all(tasks);
     }
 }
 
-// ==================== 单例与导出（向下兼容） ====================
+// ==================== 配置加载（优先环境变量，再硬编码兜底） ====================
 const push_config = {
-    HITOKOTO: 'false',
-    WX_pusher_appToken: '',
-    WX_pusher_topicIds: '',
-    PUSHME_URL: 'https://push.i-i.me',
-    PUSHME_KEY: '',
-    PUSH_PLUS_TOKEN: '',
-    PUSH_PLUS_USER: '',
+    HITOKOTO: process.env.HITOKOTO || 'false',
+    WX_pusher_appToken: process.env.WX_pusher_appToken || '',
+    WX_pusher_topicIds: process.env.WX_pusher_topicIds || '',
+    PUSHME_URL: process.env.PUSHME_URL || 'https://push.i-i.me',
+    PUSHME_KEY: process.env.PUSHME_KEY || '',
+    PUSH_PLUS_TOKEN: process.env.PUSH_PLUS_TOKEN || '',
+    PUSH_PLUS_USER: process.env.PUSH_PLUS_USER || '',
 };
+
+// 如果环境变量全为空，可在此处直接填入测试 token（不推荐长期使用）
+// push_config.WX_pusher_appToken = 'AT_xxx';
+// push_config.WX_pusher_topicIds = '44193';
 
 const manager = new NotifyManager(push_config);
 
+// ==================== 导出（向下兼容） ====================
 async function sendNotify(text, desp, params = {}) {
     return manager.send(text, desp, params);
 }
 
 function wxPusherNotify(text, desp) {
-    return new WxPusherNotifier(normalizeConfig(push_config)).notify(text, desp);
+    const cfg = normalizeConfig(push_config);
+    return new WxPusherNotifier(cfg).notify(text, desp);
 }
 
 function pushMeNotify(text, desp, params = {}) {
-    return new PushMeNotifier(normalizeConfig(push_config)).notify(text, desp, params);
+    const cfg = normalizeConfig(push_config);
+    return new PushMeNotifier(cfg).notify(text, desp, params);
 }
 
 function pushPlusNotify(text, desp) {
-    return new PushPlusNotifier(normalizeConfig(push_config)).notify(text, desp);
+    const cfg = normalizeConfig(push_config);
+    return new PushPlusNotifier(cfg).notify(text, desp);
 }
 
 module.exports = {
