@@ -66,8 +66,8 @@ if (
 const domin = config.domin;
 const pingbifenlei = config.pingbifenlei;
 const pingbibiaoti = config.pingbibiaoti;
-const zhanxianbiaoti = config.zhanxianbiaoti;
 const pingbibiaotiplus = config.pingbibiaotiplus;
+const zhanxianbiaoti = config.zhanxianbiaoti;
 const pingbineirong = config.pingbineirong;
 const zhanxianneirong = config.zhanxianneirong;
 const pingbineirongplus = config.pingbineirongplus;
@@ -97,7 +97,7 @@ function escapeRegex(string) {
 }
 
 // 用户自定义正则的安全限制
-const MAX_USER_REGEX_LEN = 100;          // 用户正则最大长度
+const MAX_USER_REGEX_LEN = 300;          // 用户正则最大长度（适当放宽以容纳稍长的分支）
 const MAX_MATCH_TARGET_LEN = 5000;       // 匹配目标最大字符数
 // 简易 Evil Regex 检测：量词嵌套模式
 const EVIL_PATTERN = /\([^)]*[*+][^)]*\)[*+]|\([^)]*\{[^}]*\}[^)]*\)[*+]/;
@@ -132,6 +132,25 @@ function daysComputed(time) {
   return diff > 0 ? Math.floor(diff / MS_PER_DAY) : 0;
 }
 
+// ------------------------ 正则拆分辅助 ------------------------
+// 按顶层 | 分割正则字符串，避免误拆括号内的 |
+function splitRegexByTopLevelOr(pattern) {
+  const branches = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (ch === '|' && depth === 0) {
+      branches.push(pattern.slice(start, i));
+      start = i + 1;
+    }
+  }
+  branches.push(pattern.slice(start));
+  return branches.filter(b => b.length > 0);
+}
+
 // ------------------------ 规则解析与匹配引擎 ------------------------
 // 解析单条 "分类###值" 规则
 function parseSingleRule(rawPart) {
@@ -156,8 +175,23 @@ function parseRules(configStr) {
                              .map(parseSingleRule)
                              .filter(Boolean),
     raw: (str) => {
-      const reg = safeUserRegExp(str, 'i');
-      return reg ? [{ catRegex: null, valRegex: reg }] : [];
+      // 若长度未超限，直接按整体编译（保持原有行为）
+      if (str.length <= MAX_USER_REGEX_LEN) {
+        const reg = safeUserRegExp(str, 'i');
+        return reg ? [{ catRegex: null, valRegex: reg }] : [];
+      }
+      // 超长时，按顶层 | 拆分，每个分支单独编译
+      const branches = splitRegexByTopLevelOr(str);
+      const rules = [];
+      for (const branch of branches) {
+        const reg = safeUserRegExp(branch, 'i');
+        if (reg) {
+          rules.push({ catRegex: null, valRegex: reg });
+        } else {
+          logger.warn(`忽略非法正则分支: ${branch.substring(0, 50)}…`);
+        }
+      }
+      return rules;
     }
   };
   const type = /###/.test(configStr) ? 'classified' : 'raw';
