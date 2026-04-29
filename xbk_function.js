@@ -1,13 +1,28 @@
 'use strict';
 
 // ======================== 用户配置区域 ======================== //
-// 版本号: v4.3
+// 版本号: v4.4
+
+/**
+ * 更新日志:
+ *
+ * v4.4 (2026-04-29)
+ * - 移除 proper-lockfile 依赖，改为直接同步文件读写，彻底兼容青龙面板
+ * - 优化 daysComputed：改为纯日期比较，完全避免时区偏移导致的临界天数误差
+ * - 采用 padStart 替代手动补零
+ * - 使用 flatMap 替代 map().filter(Boolean) 消除中间 null 值
+ * - 使用 ??= 逻辑赋值简化默认 id 生成
+ * - 统一使用可选链 (?.) 和空值合并 (??) 增强健壮性
+ * - 移除无用锁文件代码，减少文件 I/O 错误风险
+ *
+ * v4.3 (旧版)
+ * - 原始版本
+ */
 
 const notify = require('./xbk_sendNotify');
 const fs = require('node:fs');
 const got = require('got');
 const path = require('node:path');
-const lockFile = require('proper-lockfile');
 
 // ------------------------ 纯函数与常量 ---------------------------
 
@@ -91,7 +106,6 @@ const MAX_MATCH_TARGET_LEN = 5000;
 const EVIL_PATTERN = /\([^)]*[*+][^)]*\)[*+]|\([^)]*\{[^}]*\}[^)]*\)[*+]/;
 
 function escapeRegex(str) {
-    // 使用 String.raw 避免手动转义反斜杠，并用 replaceAll 增强可读性
     return str.replaceAll(ESCAPE_REGEX, String.raw`\$&`);
 }
 
@@ -122,17 +136,19 @@ function safeUserRegExp(pattern, flags) {
     return safeRegExp(pattern, flags);
 }
 
-// ------------------------ 时间计算 ---------------------------
+// ------------------------ 时间计算（纯日期，时区安全） ---------------------------
 
-function daysComputed(time) {
-    if (typeof time !== 'string' || !time) return Infinity;
-    const oldTime = new Date(time.replaceAll('-', '/'));
-    if (Number.isNaN(oldTime.getTime())) {
-        logger.warn('无法解析日期:', time);
-        return Infinity;
-    }
-    const diff = Date.now() - oldTime.getTime();
-    return diff > 0 ? Math.floor(diff / MS_PER_DAY) : 0;
+function daysComputed(dateStr) {
+    if (!dateStr || typeof dateStr !== 'string') return Infinity;
+    // 提取 yyyy-MM-dd 格式的日期部分
+    const match = dateStr.match(/^\d{4}-\d{2}-\d{2}/);
+    if (!match) return Infinity;
+    const [y, m, d] = match[0].split('-').map(Number);
+    const targetDate = new Date(y, m - 1, d);          // 本地日期
+    const today = new Date();
+    const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate()); // 本地今天 0 时
+    const diff = todayDate - targetDate;
+    return diff >= 0 ? Math.floor(diff / MS_PER_DAY) : 0;
 }
 
 // ------------------------ 规则解析 ---------------------------
@@ -181,14 +197,12 @@ function parseRules(configStr) {
         return reg ? [{ catRegex: null, valRegex: reg }] : [];
     }
     const branches = splitRegexByTopLevelOr(configStr);
-    return branches
-        .map(branch => {
-            const reg = safeUserRegExp(branch, 'i');
-            if (reg) return { catRegex: null, valRegex: reg };
-            logger.warn(`忽略非法正则分支: ${branch.substring(0, 50)}...`);
-            return null;
-        })
-        .filter(Boolean);
+    return branches.flatMap(branch => {
+        const reg = safeUserRegExp(branch, 'i');
+        if (reg) return [{ catRegex: null, valRegex: reg }];
+        logger.warn(`忽略非法正则分支: ${branch.substring(0, 50)}...`);
+        return [];   // flatMap 自动跳过空数组
+    });
 }
 
 // ------------------------ 字段匹配引擎 ---------------------------
@@ -225,6 +239,7 @@ function parseTimeRule(rawRule) {
     if (!catPattern || Number.isNaN(days)) return null;
     const catRegex = safeRegExp(escapeRegex(catPattern), 'i');
     if (!catRegex) return null;
+    // 返回检查函数
     return (catStr, groupDays) => catStr && catRegex.test(catStr) && days > groupDays;
 }
 
@@ -232,11 +247,11 @@ function checkTimeBlocked(group, catStr) {
     if (!pingbitime || typeof group.louzhuregtime !== 'string') return false;
     const groupDays = daysComputed(group.louzhuregtime);
     if (pingbitime.includes('###')) {
-        const rules = pingbitime.split(/<br>|\n\n|\r\n/);
-        return rules.some(raw => {
-            const checker = parseTimeRule(raw);
-            return checker ? checker(catStr, groupDays) : false;
+        const checkers = pingbitime.split(/<br>|\n\n|\r\n/).flatMap(raw => {
+            const c = parseTimeRule(raw);
+            return c ? [c] : [];
         });
+        return checkers.some(checker => checker?.(catStr, groupDays) ?? false);
     }
     const limitDays = Number(pingbitime);
     return !Number.isNaN(limitDays) && limitDays > groupDays;
@@ -309,9 +324,7 @@ function safeFilterItem(item) {
 
 // ------------------------ 推送内容渲染 ---------------------------
 
-function padTwo(num) {
-    return num < 10 ? '0' + num : num;
-}
+const padTwo = (num) => String(num).padStart(2, '0');
 
 const RE_H = /<h([1-6])>(.*?)<\/h\1>/gi;
 const RE_A = /<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
@@ -343,7 +356,7 @@ function tuisong_replace(template, shuju) {
     if (shuju.posttime) {
         const d = new Date(shuju.posttime * 1000);
         shuju.datetime = `${d.getFullYear()}-${padTwo(d.getMonth() + 1)}-${padTwo(d.getDate())}`;
-        shuju.shorttime = `${d.getHours()}:${padTwo(d.getMinutes())}`;
+        shuju.shorttime = `${padTwo(d.getHours())}:${padTwo(d.getMinutes())}`;
     }
 
     const contentHtml = `${shuju.content_html || ''}${CONTENT_BR_SPACER}${ORIGINAL_LINK_HTML(shuju.url)}`;
@@ -397,7 +410,7 @@ class Notifier {
     }
 }
 
-// ------------------------ 缓存服务 ---------------------------
+// ------------------------ 缓存服务（无锁，同步读写，青龙安全） ---------------------------
 
 const DATA_DIR = path.join(__dirname, CACHE_DIR_NAME);
 try {
@@ -453,34 +466,19 @@ class CacheService {
         }
     }
 
-    async getCachedIds() {
-        let release;
-        try {
-            release = await lockFile.lock(this.filePath, {
-                retries: { retries: 3, factor: 2, minTimeout: 100, maxTimeout: 500 }
-            });
-            const msgs = this.#parse();
-            return new Set(msgs.map(m => m.id));
-        } catch (err) {
-            logger.warn('获取缓存锁失败，使用空集合继续:', err.message);
-            return new Set();
-        } finally {
-            if (release) {
-                try { await release(); } catch (e) { logger.error('释放文件锁失败:', e.message); }
-            }
-        }
+    // 返回已缓存的 id 集合（同步，无锁）
+    getCachedIds() {
+        const msgs = this.#parse();
+        return new Set(msgs.map(m => m.id));
     }
 
-    async addItem(item) {
+    // 添加/更新条目（同步，无锁）
+    addItem(item) {
         if (isDryRun) {
             logger.info(`[DRY-RUN] 跳过写入缓存: ${item.id} - ${item.title}`);
             return;
         }
-        let release;
         try {
-            release = await lockFile.lock(this.filePath, {
-                retries: { retries: 5, factor: 2, minTimeout: 100, maxTimeout: 1000 }
-            });
             const messages = this.#parse();
             const idx = messages.findIndex(m => m.id === item.id);
             const enriched = { ...item, timestamp: new Date().toISOString() };
@@ -495,10 +493,6 @@ class CacheService {
             fs.writeFileSync(this.filePath, this.#serialize(messages), UTF8);
         } catch (err) {
             logger.error(`写入缓存失败 [${path.basename(this.filePath)}]:`, err.message);
-        } finally {
-            if (release) {
-                try { await release(); } catch (e) { logger.error('释放文件锁失败:', e.message); }
-            }
         }
     }
 }
@@ -524,8 +518,8 @@ function parseResponseBody(body) {
 }
 
 function ensureItemId(item) {
-    if (item.id == null) {
-        item.id = item.url || `unknown_${Date.now()}_${Math.random()}`;
+    item.id ??= item.url || `unknown_${Date.now()}_${Math.random()}`;
+    if (!item.id.startsWith('http')) {
         logger.warn('数据缺少 id，使用 url 作为标识');
     }
 }
@@ -584,13 +578,13 @@ async function main() {
 
     if (!list) return;
 
-    const cachedIds = await cacheService.getCachedIds();
+    const cachedIds = cacheService.getCachedIds();   // 同步获取，仍可 await（自动包装）
     list.forEach(ensureItemId);
 
     const newItems = [];
     for (const item of list) {
         if (cachedIds.has(item.id)) continue;
-        await cacheService.addItem(item);
+        cacheService.addItem(item);                  // 同步写入
         if (safeFilterItem(item)) {
             newItems.push(item);
         }
