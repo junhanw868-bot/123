@@ -1,7 +1,7 @@
 'use strict';
 
 // ======================== 用户配置区域 ======================== //
-// 版本号: v4.2
+// 版本号: v4.3
 
 const notify = require('./xbk_sendNotify');
 const fs = require('node:fs');
@@ -91,8 +91,8 @@ const MAX_MATCH_TARGET_LEN = 5000;
 const EVIL_PATTERN = /\([^)]*[*+][^)]*\)[*+]|\([^)]*\{[^}]*\}[^)]*\)[*+]/;
 
 function escapeRegex(str) {
-    // 修复：使用 String.raw 避免手动转义反斜杠
-    return str.replace(ESCAPE_REGEX, String.raw`\$&`);
+    // 使用 String.raw 避免手动转义反斜杠，并用 replaceAll 增强可读性
+    return str.replaceAll(ESCAPE_REGEX, String.raw`\$&`);
 }
 
 function safeRegExp(pattern, flags) {
@@ -126,7 +126,6 @@ function safeUserRegExp(pattern, flags) {
 
 function daysComputed(time) {
     if (typeof time !== 'string' || !time) return Infinity;
-    // 修复：使用 replaceAll 替代正则全局替换
     const oldTime = new Date(time.replaceAll('-', '/'));
     if (Number.isNaN(oldTime.getTime())) {
         logger.warn('无法解析日期:', time);
@@ -326,15 +325,15 @@ const RE_MULTI_NEWLINE = /\n{3,}/g;
 
 function htmlToMarkdown(shuju) {
     let html = shuju.content_html || '';
-    html = html.replace(RE_H, (_, level, content) => '#'.repeat(Number(level)) + ' ' + content + '\n\n');
-    html = html.replace(RE_A, '[$2]($1)');
-    html = html.replace(RE_IMG_ALT, '\n\n![$2]($1)\n\n');
-    html = html.replace(RE_IMG, '\n\n![]($1)\n\n');
-    html = html.replace(RE_BR, '\n\n');
-    html = html.replace(RE_P_OPEN, '\n\n');
-    html = html.replace(RE_P_CLOSE, '\n\n');
-    html = html.replace(RE_ANY_TAG, '');
-    html = html.replace(RE_MULTI_NEWLINE, '\n\n');
+    html = html.replaceAll(RE_H, (_, level, content) => '#'.repeat(Number(level)) + ' ' + content + '\n\n');
+    html = html.replaceAll(RE_A, '[$2]($1)');
+    html = html.replaceAll(RE_IMG_ALT, '\n\n![$2]($1)\n\n');
+    html = html.replaceAll(RE_IMG, '\n\n![]($1)\n\n');
+    html = html.replaceAll(RE_BR, '\n\n');
+    html = html.replaceAll(RE_P_OPEN, '\n\n');
+    html = html.replaceAll(RE_P_CLOSE, '\n\n');
+    html = html.replaceAll(RE_ANY_TAG, '');
+    html = html.replaceAll(RE_MULTI_NEWLINE, '\n\n');
     html = `${html}\n\n原文链接:[${shuju.url}](${shuju.url})\n\n\n\n`;
     return html.trim();
 }
@@ -369,7 +368,7 @@ function tuisong_replace(template, shuju) {
 
     let result = template;
     for (const [key, value] of map) {
-        result = result.split(key).join(value ?? ''); // 兼容低版本无 replaceAll
+        result = result.replaceAll(key, value ?? '');
     }
     return result;
 }
