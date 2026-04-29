@@ -1,6 +1,6 @@
 'use strict';
 
-// ======================== 用户配置区域开始 ======================== // 版本号:DeepSeek6
+// ======================== 用户配置区域开始 ======================== // 版本号: v3.9
 
 const notify = require('./xbk_sendNotify');
 const fs = require('node:fs');
@@ -80,18 +80,16 @@ const pingbitime = config.pingbitime;
 
 const newUrl = domin + '/plus/json/push.json';
 
-// ------------------------ 通知发送器（可插拔接口） ------------------------
-// 将通知模块封装为函数，如需替换通知渠道只需修改此函数
+// ------------------------ 通知发送器（可插拔接口，修复未处理Promise） ------------------------
 function sendNotification(title, content) {
   if (DRY_RUN) {
     logger.info('[DRY-RUN] 跳过推送:', title);
     return;
   }
-  try {
-    notify.wxPusherNotify(title, content);
-  } catch (pushError) {
+  // 修复：捕获 Promise 拒绝，避免 UnhandledRejection
+  Promise.resolve(notify.wxPusherNotify(title, content)).catch(pushError => {
     logger.error(`推送失败: ${title}`, pushError.message);
-  }
+  });
 }
 
 // ------------------------ 正则安全设施 ------------------------
