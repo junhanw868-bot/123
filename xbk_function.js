@@ -1,14 +1,19 @@
 'use strict';
 
 // ======================== 用户配置区域 ======================== //
-// 版本号: v4.5.1
+
+// 版本号: v4.5.2
+// - 新增统计功能：去重数、标题/内容/分类命中数，支持近1/2小时累计
 
 /**
  * 更新日志:
  *
+ * v4.5.2 (2026-04-30)
+ * - 增加按时间窗口的命中统计，输出近2小时去重、标题命中、内容命中、分类命中数量
+ *
  * v4.5.1 (2026-04-29)
- * - 🔧 紧急修复：ensureItemId 因 item.id 可能为数字而导致 startsWith 崩溃，回归 v4.3 逻辑，
- *   仅在 id == null 时生成缺省值，不再检查 id 格式，确保与数字 id 兼容
+ * - 🔧 紧急修复：ensureItemId 因 item.id 可能为数字而导致 startsWith 崩溃
+ * - 仅在 id == null 时生成缺省值，不再检查 id 格式，确保与数字 id 兼容
  *
  * v4.5 (2026-04-29)
  * - 根据代码分析建议，将 String.prototype.match() 替换为 RegExp.prototype.exec()
@@ -30,8 +35,7 @@ const fs = require('node:fs');
 const got = require('got');
 const path = require('node:path');
 
-// ------------------------ 纯函数与常量 ---------------------------
-
+// ----------------------------------- 纯函数与常量 -----------------------------------
 const EMPTY_JSON_ARRAY = '[]';
 const UTF8 = 'utf8';
 const CACHE_DIR_NAME = 'xianbaoku_cache';
@@ -40,14 +44,17 @@ const MAX_CACHE_SIZE = 100;
 const REQUEST_TIMEOUT_MS = 10000;
 const REQUEST_RETRY_LIMIT = 2;
 const MS_PER_DAY = 86400000;
+
 const CONTENT_BR_SPACER = '<br>&nbsp;<br>&nbsp;<br>';
 const ORIGINAL_LINK_HTML = (url) => `原文链接:<a href="${url}" target="_blank">${url}</a><br>&nbsp;<br>&nbsp;<br>`;
 
 const LOG_LEVEL = Object.freeze({ DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 });
 const CURRENT_LOG_LEVEL = LOG_LEVEL.INFO;
 
-// ------------------------ 日志工具 ---------------------------
+// 统计时间窗口（小时）
+const STATS_WINDOW_HOURS = 2;   // 可改为 1
 
+// ----------------------------------- 日志工具 -----------------------------------
 function selectLogFunction(level) {
     if (level >= LOG_LEVEL.ERROR) return console.error;
     if (level >= LOG_LEVEL.WARN) return console.warn;
@@ -66,8 +73,7 @@ const logger = {
     error(...args) { this._log(LOG_LEVEL.ERROR, 'ERROR', ...args); }
 };
 
-// ------------------------ 配置加载与校验 ---------------------------
-
+// ----------------------------------- 配置加载与校验 -----------------------------------
 let config;
 try {
     config = require('./xbk_config.json');
@@ -101,11 +107,9 @@ const pingbilouzhu = config.pingbilouzhu;
 const zhanxianlouzhu = config.zhanxianlouzhu;
 const pingbilouzhuplus = config.pingbilouzhuplus;
 const pingbitime = config.pingbitime;
-
 const fetchUrl = domin + '/plus/json/push.json';
 
-// ------------------------ 正则安全设施 ---------------------------
-
+// ----------------------------------- 正则安全设施 -----------------------------------
 const ESCAPE_REGEX = /[.*+?^${}()|[\]\\]/g;
 const MAX_USER_REGEX_LEN = 300;
 const MAX_MATCH_TARGET_LEN = 5000;
@@ -142,8 +146,7 @@ function safeUserRegExp(pattern, flags) {
     return safeRegExp(pattern, flags);
 }
 
-// ------------------------ 时间计算（纯日期，时区安全） ---------------------------
-
+// ----------------------------------- 时间计算（纯日期，时区安全） -----------------------------------
 function daysComputed(dateStr) {
     if (!dateStr || typeof dateStr !== 'string') return Infinity;
     const match = /^\d{4}-\d{2}-\d{2}/.exec(dateStr);
@@ -156,8 +159,7 @@ function daysComputed(dateStr) {
     return diff >= 0 ? Math.floor(diff / MS_PER_DAY) : 0;
 }
 
-// ------------------------ 规则解析 ---------------------------
-
+// ----------------------------------- 规则解析 -----------------------------------
 function splitRegexByTopLevelOr(pattern) {
     const branches = [];
     let depth = 0;
@@ -209,8 +211,7 @@ function parseRules(configStr) {
     });
 }
 
-// ------------------------ 字段匹配引擎 ---------------------------
-
+// ----------------------------------- 字段匹配引擎 -----------------------------------
 function matchesRule(rule, catStr, targetStr) {
     if (!rule.valRegex || !targetStr) return false;
     if (targetStr.length > MAX_MATCH_TARGET_LEN) {
@@ -232,8 +233,7 @@ function matchesAnyRule(rules, catStr, targetStr) {
     return rules.some(rule => matchesRule(rule, catStr, targetStr));
 }
 
-// ------------------------ 时间屏蔽判断 ---------------------------
-
+// ----------------------------------- 时间屏蔽判断 -----------------------------------
 function parseTimeRule(rawRule) {
     const parts = rawRule.split('###');
     if (parts.length < 2) return null;
@@ -260,8 +260,7 @@ function checkTimeBlocked(group, catStr) {
     return !Number.isNaN(limitDays) && limitDays > groupDays;
 }
 
-// ------------------------ 编译所有规则（资源复用） ---------------------------
-
+// ----------------------------------- 编译所有规则（资源复用） -----------------------------------
 const RULES = Object.freeze({
     zhanxianlouzhu: parseRules(zhanxianlouzhu),
     pingbilouzhu: parseRules(pingbilouzhu),
@@ -276,8 +275,60 @@ const RULES = Object.freeze({
 
 const pingbifenleiReg = safeRegExp(pingbifenlei, 'i');
 
-// ------------------------ 单条数据过滤器 ---------------------------
+// ----------------------------------- 获取过滤原因（新函数，替代原 filterItem 的布尔返回） -----------------------------------
+function getFilterReason(group) {
+    if (!group || typeof group !== 'object') {
+        logger.warn('getFilterReason 接收到无效 group，已忽略');
+        return { keep: false, reasonType: 'invalid' };
+    }
 
+    const catStr = typeof group.catename === 'string' ? group.catename : null;
+    const louzhuStr = typeof group.louzhu === 'string' ? group.louzhu : null;
+    const titleStr = typeof group.title === 'string' ? group.title : null;
+    const contentStr = typeof group.content === 'string' ? group.content : null;
+
+    // 时间屏蔽
+    if (checkTimeBlocked(group, catStr)) {
+        return { keep: false, reasonType: 'time' };
+    }
+
+    // 分类屏蔽（pingbifenlei）
+    if (catStr && pingbifenleiReg?.test?.(catStr)) {
+        return { keep: false, reasonType: 'category' };
+    }
+
+    const louzhuRetain = isRetained(RULES.zhanxianlouzhu, catStr, louzhuStr);
+    const titleRetain = isRetained(RULES.zhanxianbiaoti, catStr, titleStr);
+    const contentRetain = isRetained(RULES.zhanxianneirong, catStr, contentStr);
+
+    // 楼主屏蔽
+    if (isBlocked(RULES.pingbilouzhu, catStr, louzhuStr, louzhuRetain)) {
+        return { keep: false, reasonType: 'author' };
+    }
+    if (isBlocked(RULES.pingbilouzhuplus, catStr, louzhuStr, louzhuRetain)) {
+        return { keep: false, reasonType: 'author' };
+    }
+
+    // 标题命中
+    if (isBlocked(RULES.pingbibiaoti, catStr, titleStr, louzhuRetain, titleRetain)) {
+        return { keep: false, reasonType: 'title' };
+    }
+    if (isBlocked(RULES.pingbibiaotiplus, catStr, titleStr, louzhuRetain)) {
+        return { keep: false, reasonType: 'title' };
+    }
+
+    // 内容命中
+    if (isBlocked(RULES.pingbineirong, catStr, contentStr, louzhuRetain, titleRetain, contentRetain)) {
+        return { keep: false, reasonType: 'content' };
+    }
+    if (isBlocked(RULES.pingbineirongplus, catStr, contentStr, louzhuRetain, titleRetain)) {
+        return { keep: false, reasonType: 'content' };
+    }
+
+    return { keep: true, reasonType: 'keep' };
+}
+
+// 保留原有的 isRetained / isBlocked 辅助函数（供 getFilterReason 使用）
 function isRetained(rules, catStr, targetStr) {
     return targetStr && matchesAnyRule(rules, catStr, targetStr);
 }
@@ -288,32 +339,9 @@ function isBlocked(rules, catStr, targetStr, ...retainFlags) {
     return matchesAnyRule(rules, catStr, targetStr);
 }
 
+// 保持原 filterItem 函数（以防其他地方有调用），但内部改为调用 getFilterReason
 function filterItem(group) {
-    if (!group || typeof group !== 'object') {
-        logger.warn('listfilter 接收到无效 group，已忽略');
-        return false;
-    }
-
-    const catStr = typeof group.catename === 'string' ? group.catename : null;
-    const louzhuStr = typeof group.louzhu === 'string' ? group.louzhu : null;
-    const titleStr = typeof group.title === 'string' ? group.title : null;
-    const contentStr = typeof group.content === 'string' ? group.content : null;
-
-    if (checkTimeBlocked(group, catStr)) return false;
-    if (catStr && pingbifenleiReg?.test?.(catStr)) return false;
-
-    const louzhuRetain = isRetained(RULES.zhanxianlouzhu, catStr, louzhuStr);
-    const titleRetain = isRetained(RULES.zhanxianbiaoti, catStr, titleStr);
-    const contentRetain = isRetained(RULES.zhanxianneirong, catStr, contentStr);
-
-    if (isBlocked(RULES.pingbilouzhu, catStr, louzhuStr, louzhuRetain)) return false;
-    if (isBlocked(RULES.pingbilouzhuplus, catStr, louzhuStr, louzhuRetain)) return false;
-    if (isBlocked(RULES.pingbibiaoti, catStr, titleStr, louzhuRetain, titleRetain)) return false;
-    if (isBlocked(RULES.pingbibiaotiplus, catStr, titleStr, louzhuRetain)) return false;
-    if (isBlocked(RULES.pingbineirong, catStr, contentStr, louzhuRetain, titleRetain, contentRetain)) return false;
-    if (isBlocked(RULES.pingbineirongplus, catStr, contentStr, louzhuRetain, titleRetain)) return false;
-
-    return true;
+    return getFilterReason(group).keep;
 }
 
 function safeFilterItem(item) {
@@ -325,10 +353,8 @@ function safeFilterItem(item) {
     }
 }
 
-// ------------------------ 推送内容渲染 ---------------------------
-
+// ----------------------------------- 推送内容渲染 -----------------------------------
 const padTwo = (num) => String(num).padStart(2, '0');
-
 const RE_H = /<h([1-6])>(.*?)<\/h\1>/gi;
 const RE_A = /<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
 const RE_IMG_ALT = /<img[^>]+src="([^"]+)"[^>]*alt="([^"]*)"[^>]*>/gi;
@@ -361,9 +387,7 @@ function tuisong_replace(template, shuju) {
         shuju.datetime = `${d.getFullYear()}-${padTwo(d.getMonth() + 1)}-${padTwo(d.getDate())}`;
         shuju.shorttime = `${padTwo(d.getHours())}:${padTwo(d.getMinutes())}`;
     }
-
     const contentHtml = `${shuju.content_html || ''}${CONTENT_BR_SPACER}${ORIGINAL_LINK_HTML(shuju.url)}`;
-
     const map = Object.entries({
         '{标题}': shuju.title,
         '{内容}': shuju.content,
@@ -381,7 +405,6 @@ function tuisong_replace(template, shuju) {
         '{品牌}': shuju.brand,
         '{图片}': shuju.pic
     });
-
     let result = template;
     for (const [key, value] of map) {
         result = result.replaceAll(key, value ?? '');
@@ -389,15 +412,13 @@ function tuisong_replace(template, shuju) {
     return result;
 }
 
-// ------------------------ 运行时状态 ---------------------------
-
+// ----------------------------------- 运行时状态 -----------------------------------
 const isDryRun = process.argv.includes('--dry-run');
 if (isDryRun) {
     logger.info('[DRY-RUN] 仅验证过滤结果，不推送、不写入缓存');
 }
 
-// ------------------------ 推送接口封装（使用 sendNotify 多通道） ---------------------------
-
+// ----------------------------------- 推送接口封装（使用 sendNotify 多通道） -----------------------------------
 class Notifier {
     async send(title, content) {
         if (isDryRun) {
@@ -413,8 +434,7 @@ class Notifier {
     }
 }
 
-// ------------------------ 缓存服务（无锁，同步读写，青龙安全） ---------------------------
-
+// ----------------------------------- 缓存服务（无锁，同步读写，青龙安全） -----------------------------------
 const DATA_DIR = path.join(__dirname, CACHE_DIR_NAME);
 try {
     if (!fs.existsSync(DATA_DIR)) {
@@ -433,7 +453,6 @@ class CacheService {
         this.filePath = getFilePath(filename);
         this.#ensureFile();
     }
-
     #ensureFile() {
         if (!fs.existsSync(this.filePath)) {
             try {
@@ -443,7 +462,6 @@ class CacheService {
             }
         }
     }
-
     #parse() {
         try {
             const raw = fs.readFileSync(this.filePath, UTF8);
@@ -459,7 +477,6 @@ class CacheService {
             return [];
         }
     }
-
     #serialize(messages) {
         try {
             return JSON.stringify(messages, null, 2);
@@ -468,12 +485,10 @@ class CacheService {
             return EMPTY_JSON_ARRAY;
         }
     }
-
     getCachedIds() {
         const msgs = this.#parse();
         return new Set(msgs.map(m => m.id));
     }
-
     addItem(item) {
         if (isDryRun) {
             logger.info(`[DRY-RUN] 跳过写入缓存: ${item.id} - ${item.title}`);
@@ -498,8 +513,53 @@ class CacheService {
     }
 }
 
-// ------------------------ 数据获取与解析 ---------------------------
+// ----------------------------------- 统计服务（按时间窗口累计） -----------------------------------
+class StatsService {
+    constructor(windowHours = STATS_WINDOW_HOURS) {
+        this.filePath = getFilePath('stats.json');
+        this.windowMs = windowHours * 60 * 60 * 1000;
+        this.#ensureFile();
+    }
+    #ensureFile() {
+        if (!fs.existsSync(this.filePath)) {
+            fs.writeFileSync(this.filePath, '[]', UTF8);
+        }
+    }
+    #loadRecords() {
+        try {
+            const raw = fs.readFileSync(this.filePath, UTF8);
+            const arr = JSON.parse(raw);
+            return Array.isArray(arr) ? arr : [];
+        } catch {
+            return [];
+        }
+    }
+    #saveRecords(records) {
+        // 只保留最近200条，防止无限增长
+        const toSave = records.slice(-200);
+        fs.writeFileSync(this.filePath, JSON.stringify(toSave, null, 2), UTF8);
+    }
+    addRecord(record) {
+        if (isDryRun) return;
+        const records = this.#loadRecords();
+        records.push({ ts: Date.now(), ...record });
+        this.#saveRecords(records);
+    }
+    getWindowStats() {
+        const now = Date.now();
+        const records = this.#loadRecords();
+        const filtered = records.filter(r => (now - r.ts) <= this.windowMs);
+        const sum = (key) => filtered.reduce((acc, r) => acc + (r[key] || 0), 0);
+        return {
+            dedup: sum('dedup'),
+            title: sum('titleHit'),
+            content: sum('contentHit'),
+            category: sum('categoryHit')
+        };
+    }
+}
 
+// ----------------------------------- 数据获取与解析 -----------------------------------
 function parseResponseBody(body) {
     try {
         const parsed = JSON.parse(body);
@@ -518,7 +578,6 @@ function parseResponseBody(body) {
     }
 }
 
-// 🔧 修复：仅处理缺失 id，不对 id 类型做任何假设
 function ensureItemId(item) {
     if (item.id == null) {
         item.id = item.url || `unknown_${Date.now()}_${Math.random()}`;
@@ -551,14 +610,14 @@ function extractCacheFileName(url) {
     return filename;
 }
 
-// ------------------------ 主流程 ---------------------------
-
+// ----------------------------------- 主流程 -----------------------------------
 async function main() {
     logger.info('开始获取线报酷数据...');
 
     const cacheFileName = extractCacheFileName(fetchUrl);
     const cacheService = new CacheService(cacheFileName);
     const notifier = new Notifier();
+    const statsService = new StatsService(STATS_WINDOW_HOURS);
 
     let list;
     try {
@@ -583,26 +642,62 @@ async function main() {
     const cachedIds = cacheService.getCachedIds();
     list.forEach(ensureItemId);
 
+    let dedupCount = 0;
+    let titleHit = 0;
+    let contentHit = 0;
+    let categoryHit = 0;
+    // 可选计数（用于内部日志）
+    let timeHit = 0;
+    let authorHit = 0;
+
     const newItems = [];
+
     for (const item of list) {
-        if (cachedIds.has(item.id)) continue;
+        if (cachedIds.has(item.id)) {
+            dedupCount++;
+            continue;
+        }
+
+        // 无论是否保留，都先写入缓存（与原逻辑一致）
         cacheService.addItem(item);
-        if (safeFilterItem(item)) {
+
+        const { keep, reasonType } = getFilterReason(item);
+        if (keep) {
             newItems.push(item);
+        } else {
+            switch (reasonType) {
+                case 'title': titleHit++; break;
+                case 'content': contentHit++; break;
+                case 'category': categoryHit++; break;
+                case 'time': timeHit++; break;
+                case 'author': authorHit++; break;
+                default: break;
+            }
         }
     }
 
+    // 输出本次执行的命中详情
+    logger.info(`本次执行统计：去重 ${dedupCount} | 标题命中 ${titleHit} | 内容命中 ${contentHit} | 分类命中 ${categoryHit} | 其他(时间/楼主) ${timeHit + authorHit}`);
+    
+    // 记录到持久化统计（只记录用户关心的四项）
+    statsService.addRecord({ dedup: dedupCount, titleHit, contentHit, categoryHit });
+
+    // 获取时间窗口内的累计统计
+    const windowStats = statsService.getWindowStats();
+    console.log(`\n📊 近${STATS_WINDOW_HOURS}小时累计统计：去重 ${windowStats.dedup} 条 | 标题命中 ${windowStats.title} 条 | 内容命中 ${windowStats.content} 条 | 分类命中 ${windowStats.category} 条\n`);
+
+    // 推送新数据
     for (const item of newItems) {
         ensureItemUrl(item);
         await notifier.send(
             tuisong_replace('【{分类名}】{标题}', item),
             tuisong_replace('<h5>{标题}</h5><br>{Html内容}', item)
         );
-        console.log('----------------------------------------------');
+        console.log('--------------------------------------------------------------');
         console.log(`发现到新数据:${item.title}【${item.catename}】${item.url}`);
     }
 
-    console.log('\n\n\n\n**************************************************');
+    console.log('\n\n\n\n****************************************');
     console.log(`获取到${list.length}条数据，筛选后的新数据${newItems.length}条，本次任务结束`);
 }
 
