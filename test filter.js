@@ -1,4 +1,4 @@
-//  版本1.9r （重构版：降低认知复杂度）
+//  版本1.91r （重构版：降低认知复杂度）
 // test_filter.js - 批量测试脚本（重构降低圈复杂度与认知复杂度）
 //  新增：屏蔽/通过原因显示具体匹配规则或豁免规则、分类分支定位、关键词命中显示、
 //        HTML内容合并、debug模式、性能统计、--verbose、--show、--no-stats等
@@ -10,7 +10,7 @@ const path = require('node:path');
 // ------------------------ 调试开关 ------------------------
 const DEBUG = false;
 
-// ------------------------ 工具函数（原样保留） ------------------------
+// ------------------------ 工具函数 ------------------------
 const ESCAPE_REGEX = /[.*+?^${}()|[\]\\]/g;
 const MAX_USER_REGEX_LEN = 300;
 const MAX_MATCH_TARGET_LEN = 5000;
@@ -129,22 +129,25 @@ function isRetainedDetail(rules, catStr, targetStr) {
     return { retained: !!rule, rule };
 }
 
+// ✅ 修正点2：统一使用可选链
 function matchedText(rule, targetStr) {
-    if (!rule || !rule.valRegex || !targetStr) return '';
+    if (!rule?.valRegex || !targetStr) return '';
     const m = targetStr.match(rule.valRegex);
     return m ? m[0] : '';
 }
 
+// ✅ 已使用可选链
 function ruleText(rule) {
-    if (!rule || !rule.raw) return '?';
+    if (!rule?.raw) return '?';
     const r = rule.raw;
     return r.length > 77 ? r.substring(0, 77) + '...' : r;
 }
 
+// ✅ 已使用可选链
 function findMatchedBranch(fullPattern, testStr) {
     if (!fullPattern || !testStr) return null;
     const fullReg = safeRegExp(fullPattern, 'i');
-    if (!fullReg || !fullReg.test(testStr)) return null;
+    if (!fullReg?.test(testStr)) return null;
     const branches = splitRegexByTopLevelOr(fullPattern);
     for (const branch of branches) {
         try {
@@ -155,7 +158,7 @@ function findMatchedBranch(fullPattern, testStr) {
     return null;
 }
 
-// 占位函数，保留原有签名
+// 占位函数
 function daysComputed(dateStr) { return 0; }
 function checkTimeBlocked(group, catStr) { return false; }
 
@@ -173,12 +176,10 @@ function loadConfig() {
 
 const config = loadConfig();
 
-// 提取配置字段（保留原变量名，避免大改依赖）
-const domin = config.domin;                          // eslint-disable-line no-unused-vars
+const domin = config.domin;
 const pingbifenlei = config.pingbifenlei;
 const pingbifenleiReg = safeRegExp(pingbifenlei, 'i');
 
-// 编译所有规则
 const RULES = {
     zhanxianlouzhu: parseRules(config.zhanxianlouzhu),
     pingbilouzhu: parseRules(config.pingbilouzhu),
@@ -194,33 +195,28 @@ const RULES = {
 // ------------------------ 表驱动字段检查 ------------------------
 function fieldCheckDescriptors() {
     return [
-        { field: 'louzhu', rules: RULES.pingbilouzhu,          label: '楼主屏蔽' },
-        { field: 'louzhu', rules: RULES.pingbilouzhuplus,      label: '楼主加强屏蔽' },
-        { field: 'title',  rules: RULES.pingbibiaoti,          label: '标题屏蔽' },
-        { field: 'title',  rules: RULES.pingbibiaotiplus,      label: '标题加强屏蔽' },
-        { field: 'content',rules: RULES.pingbineirong,         label: '内容屏蔽' },
-        { field: 'content',rules: RULES.pingbineirongplus,     label: '内容加强屏蔽' }
+        { field: 'louzhu', rules: RULES.pingbilouzhu,      label: '楼主屏蔽' },
+        { field: 'louzhu', rules: RULES.pingbilouzhuplus,  label: '楼主加强屏蔽' },
+        { field: 'title',  rules: RULES.pingbibiaoti,      label: '标题屏蔽' },
+        { field: 'title',  rules: RULES.pingbibiaotiplus,  label: '标题加强屏蔽' },
+        { field: 'content',rules: RULES.pingbineirong,     label: '内容屏蔽' },
+        { field: 'content',rules: RULES.pingbineirongplus, label: '内容加强屏蔽' }
     ];
 }
 
-// ------------------------ 纯函数：收集字段屏蔽原因 ------------------------
 function collectFieldBlockReasons(rules, catStr, targetStr, isRetained, label) {
     const reasons = [];
     if (!targetStr || isRetained || !rules || rules.length === 0) return reasons;
     for (const rule of rules) {
         if (matchesRule(rule, catStr, targetStr)) {
             const hit = matchedText(rule, targetStr);
-            reasons.push({
-                type: label,
-                detail: ruleText(rule),
-                hit: hit || ''
-            });
+            reasons.push({ type: label, detail: ruleText(rule), hit: hit || '' });
         }
     }
     return reasons;
 }
 
-// ------------------------ 提取的内容合并 ------------------------
+// ------------------------ 内容合并 ------------------------
 function mergeContent(item) {
     const parts = [item.content, item.content_html].filter(v => typeof v === 'string');
     if (parts.length === 0) return null;
@@ -228,9 +224,9 @@ function mergeContent(item) {
     return parts.join(' ');
 }
 
-// ------------------------ 提取的分类屏蔽检查 ------------------------
+// ✅ 修正点1：去掉多余的 ?.
 function checkCategoryBlock(catStr) {
-    if (!catStr || !pingbifenleiReg?.test?.(catStr)) return null; // 未命中
+    if (!catStr || !pingbifenleiReg?.test(catStr)) return null;
     const matchedBranch = findMatchedBranch(pingbifenlei, catStr);
     const detail = matchedBranch
         ? `命中分类分支：“${matchedBranch}”`
@@ -238,7 +234,6 @@ function checkCategoryBlock(catStr) {
     return { passed: false, reasons: [{ type: '分类屏蔽', detail, hit: '' }] };
 }
 
-// ------------------------ 提取的豁免原因构建 ------------------------
 function buildRetainReasons(retainMap) {
     const reasons = [];
     if (retainMap.louzhu.retained) reasons.push({ type: '楼主展现', detail: ruleText(retainMap.louzhu.rule), hit: '' });
@@ -247,7 +242,6 @@ function buildRetainReasons(retainMap) {
     return reasons;
 }
 
-// ------------------------ 收集所有字段屏蔽原因 ------------------------
 function collectAllBlockReasons(catStr, louzhuStr, titleStr, contentStr, retainMap) {
     const targetMap = { louzhu: louzhuStr, title: titleStr, content: contentStr };
     const reasons = [];
@@ -259,39 +253,28 @@ function collectAllBlockReasons(catStr, louzhuStr, titleStr, contentStr, retainM
     return reasons;
 }
 
-// ------------------------ 核心过滤逻辑（重构后） ------------------------
 function testItem(item) {
     const catStr = typeof item.catename === 'string' ? item.catename : null;
     const louzhuStr = typeof item.louzhu === 'string' ? item.louzhu : null;
     const titleStr = typeof item.title === 'string' ? item.title : null;
     const contentStr = mergeContent(item);
 
-    // 1. 分类屏蔽（最高优先级，早返回）
     const categoryResult = checkCategoryBlock(catStr);
     if (categoryResult) return categoryResult;
 
-    // 2. 豁免检查
     const retainMap = {
         louzhu: isRetainedDetail(RULES.zhanxianlouzhu, catStr, louzhuStr),
         title: isRetainedDetail(RULES.zhanxianbiaoti, catStr, titleStr),
         content: isRetainedDetail(RULES.zhanxianneirong, catStr, contentStr)
     };
     const retainReasons = buildRetainReasons(retainMap);
-
-    // 3. 字段屏蔽检查（表驱动）
     const blockedReasons = collectAllBlockReasons(catStr, louzhuStr, titleStr, contentStr, retainMap);
 
-    // 4. 返回结构化结果
-    if (blockedReasons.length > 0) {
-        return { passed: false, reasons: blockedReasons };
-    }
-    if (retainReasons.length > 0) {
-        return { passed: true, reasons: retainReasons };
-    }
+    if (blockedReasons.length > 0) return { passed: false, reasons: blockedReasons };
+    if (retainReasons.length > 0) return { passed: true, reasons: retainReasons };
     return { passed: true, reasons: [{ type: '无屏蔽规则命中', detail: '', hit: '' }] };
 }
 
-// ------------------------ 结果格式化 （与1.9相同） ------------------------
 function formatReasons(reasons) {
     return reasons.map(r => {
         if (r.type === '无屏蔽规则命中') return '无屏蔽规则命中';
@@ -302,11 +285,9 @@ function formatReasons(reasons) {
     });
 }
 
-// ------------------------ 分析汇总 ------------------------
 function analyzeResults(items) {
     let passCount = 0, blockCount = 0;
-    const blockedItems = [];
-    const exemptItems = [];
+    const blockedItems = [], exemptItems = [];
 
     items.forEach((item, index) => {
         const catStr = item.catename ?? '(无)';
@@ -316,28 +297,17 @@ function analyzeResults(items) {
         if (result.passed) {
             passCount++;
             if (result.reasons.some(r => r.type.includes('展现'))) {
-                exemptItems.push({
-                    index: index + 1,
-                    cat: catStr,
-                    title: titleStr,
-                    reasons: result.reasons
-                });
+                exemptItems.push({ index: index + 1, cat: catStr, title: titleStr, reasons: result.reasons });
             }
         } else {
             blockCount++;
-            blockedItems.push({
-                index: index + 1,
-                cat: catStr,
-                title: titleStr,
-                reasons: result.reasons
-            });
+            blockedItems.push({ index: index + 1, cat: catStr, title: titleStr, reasons: result.reasons });
         }
     });
 
     return { items, passCount, blockCount, blockedItems, exemptItems };
 }
 
-// ------------------------ 打印辅助 ------------------------
 function shouldShow(mode, passed) {
     if (mode === 'all') return true;
     if (mode === 'passed') return passed;
@@ -350,11 +320,9 @@ function printItemResult(item, index, result, showMode) {
     const catStr = item.catename ?? '(无)';
     const titleStr = (item.title ?? '(无)').substring(0, 40);
     const prefix = result.passed ? '✅' : '❌';
-    const idxStr = (index + 1).toString().padStart(4);
-    console.log(`${prefix} #${idxStr}  [${catStr}]`);
+    console.log(`${prefix} #${(index + 1).toString().padStart(4)}  [${catStr}]`);
     console.log(`   标题: ${titleStr}`);
-    const reasonsStr = formatReasons(result.reasons);
-    reasonsStr.forEach(r => console.log(`   ↳ ${r}`));
+    formatReasons(result.reasons).forEach(r => console.log(`   ↳ ${r}`));
     console.log('');
 }
 
@@ -372,7 +340,6 @@ function buildBlockStats(blockedItems) {
             reasonStats[type][detailKey] = (reasonStats[type][detailKey] || 0) + 1;
         }
     }
-
     return { reasonStats, totalRuleHits };
 }
 
@@ -396,7 +363,6 @@ function printStats(summary, stats, showMode) {
     }
 }
 
-// ------------------------ 批量测试入口 ------------------------
 function testBatch(items, options = {}) {
     const { verbose = false, showMode = 'blocked', noStats = false } = options;
     if (!Array.isArray(items) || items.length === 0) {
@@ -404,22 +370,12 @@ function testBatch(items, options = {}) {
         return;
     }
 
-    if (!noStats) {
-        console.log(`📦 共加载 ${items.length} 条数据，开始批量测试...\n`);
-    }
+    if (!noStats) console.log(`📦 共加载 ${items.length} 条数据，开始批量测试...\n`);
 
     console.time('⏱ 批量测试耗时');
-
-    // 分析阶段（包含 testItem 调用）
     const summary = analyzeResults(items);
 
-    // 逐条打印（复用 summary 中的 items）
-    summary.items.forEach((item, index) => {
-        // 为了打印，可直接使用 summary 中计算好的结果，避免重复调用 testItem
-        // 简单实现：重新调用 testItem（或者修改 analyzeResults 记录每个 item 的 result）
-        const result = testItem(item);
-        printItemResult(item, index, result, showMode);
-    });
+    summary.items.forEach((item, index) => printItemResult(item, index, testItem(item), showMode));
 
     console.timeEnd('⏱ 批量测试耗时');
 
@@ -438,14 +394,9 @@ function testBatch(items, options = {}) {
     }
 }
 
-// ------------------------ 命令行解析 ------------------------
+// ------------------------ 命令行 & 主流程 ------------------------
 function parseArgs(args) {
-    const options = {
-        batchFilePath: null,
-        verbose: false,
-        showMode: 'blocked',
-        noStats: false
-    };
+    const options = { batchFilePath: null, verbose: false, showMode: 'blocked', noStats: false };
 
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
@@ -456,42 +407,28 @@ function parseArgs(args) {
             options.verbose = true;
         } else if (arg === '--show' && args[i + 1]) {
             const mode = args[i + 1];
-            if (['all', 'passed', 'blocked'].includes(mode)) {
-                options.showMode = mode;
-            } else {
-                console.warn(`未知 --show 模式: ${mode}，有效值: all, passed, blocked`);
-            }
+            if (['all', 'passed', 'blocked'].includes(mode)) options.showMode = mode;
+            else console.warn(`未知 --show 模式: ${mode}`);
             i++;
         } else if (arg === '--no-stats') {
             options.noStats = true;
         } else if (arg === '--help' || arg === '-h') {
-            printHelp();
+            console.log(`
+使用方法:
+  node test_filter.js --file <路径>
+  node test_filter.js --file <路径> --verbose
+  node test_filter.js --show <all|passed|blocked>
+  node test_filter.js --no-stats
+`);
             process.exit(0);
         }
     }
-
     return options;
 }
 
-// ------------------------ 帮助信息 ------------------------
-function printHelp() {
-    console.log(`
-使用方法:
-  node test_filter.js --file <路径>              # 从 JSON 文件批量测试，文件应为对象数组
-  node test_filter.js --file <路径> --verbose    # 批量测试并显示全部通过记录
-  node test_filter.js --show <all|passed|blocked>  # 控制显示条目类型（默认 blocked）
-  node test_filter.js --no-stats                # 不显示统计头部信息
-
-仅支持 --file 模式。单条测试请构造一个包含该条目的 JSON 文件。
-`);
-}
-
-// ------------------------ 主流程 ------------------------
 const options = parseArgs(process.argv.slice(2));
-
 if (!options.batchFilePath) {
     console.log('❌ 请使用 --file 指定测试 JSON 文件。');
-    printHelp();
     process.exit(1);
 }
 
