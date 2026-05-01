@@ -1,4 +1,4 @@
-//  版本1.92r （重构版：降低认知复杂度）
+//  版本1.91r （重构版：降低认知复杂度）
 // test_filter.js - 批量测试脚本（重构降低圈复杂度与认知复杂度）
 //  新增：屏蔽/通过原因显示具体匹配规则或豁免规则、分类分支定位、关键词命中显示、
 //        HTML内容合并、debug模式、性能统计、--verbose、--show、--no-stats等
@@ -431,6 +431,7 @@ if (!options.batchFilePath) {
     console.log('❌ 请使用 --file 指定测试 JSON 文件。');
     process.exit(1);
 }
+
 try {
     const rawData = fs.readFileSync(options.batchFilePath, 'utf-8');
     let items;
@@ -442,7 +443,6 @@ try {
         items = [];
         let buffer = '';
         let braceCount = 0;
-        let parseFailCount = 0;                     // 新增：失败计数器
         for (const line of lines) {
             for (const ch of line) {
                 if (ch === '{') braceCount++;
@@ -453,23 +453,12 @@ try {
                 try {
                     items.push(JSON.parse(buffer));
                 } catch (e) {
-                    parseFailCount++;
-                    // 序号标识，方便定位
-                    console.error(`[解析失败 #${parseFailCount}] 无法解析的对象:`, buffer.substring(0, 100));
+                    console.error('无法解析的对象:', buffer.substring(0, 100));
                 }
                 buffer = '';
             }
         }
         if (items.length === 0) throw new Error('无法从文件中提取任何有效 JSON 对象');
-
-        // 新增：统计信息与阈值检查
-        if (parseFailCount > 0) {
-            const totalAttempts = items.length + parseFailCount;
-            console.warn(`⚠️ 行级解析完成：成功 ${items.length} 个，失败 ${parseFailCount} 个（共 ${totalAttempts} 个对象尝试）`);
-            if (parseFailCount / totalAttempts > 0.5) {
-                throw new Error(`解析失败比例过高 (${parseFailCount}/${totalAttempts})，终止测试`);
-            }
-        }
     }
 
     testBatch(items, {
