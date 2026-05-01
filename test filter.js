@@ -451,22 +451,31 @@ try {
             buffer += line;
             if (braceCount === 0 && buffer.trim()) {
                 try {
-                    items.push(JSON.parse(buffer));
-                } catch (e) {
-                    console.error('无法解析的对象:', buffer.substring(0, 100));
-                }
-                buffer = '';
-            }
+    items = JSON.parse(rawData);
+} catch (parseError) {
+    console.warn('⚠️ JSON 解析失败，尝试按行分拆对象修复...');
+    console.warn(`   原因：${parseError.message}`);
+    
+    const lines = rawData.split(/\r?\n/).filter(line => line.trim());
+    items = [];
+    let buffer = '';
+    let braceCount = 0;
+    for (const line of lines) {
+        for (const ch of line) {
+            if (ch === '{') braceCount++;
+            else if (ch === '}') braceCount--;
         }
-        if (items.length === 0) throw new Error('无法从文件中提取任何有效 JSON 对象');
+        buffer += line;
+        if (braceCount === 0 && buffer.trim()) {
+            try {
+                items.push(JSON.parse(buffer));
+            } catch (e) {
+                console.error('无法解析的对象:', buffer.substring(0, 100), e.message);
+            }
+            buffer = '';
+        }
     }
-
-    testBatch(items, {
-        verbose: options.verbose,
-        showMode: options.showMode,
-        noStats: options.noStats
-    });
-} catch (e) {
-    console.error('❌ 读取或解析文件失败:', e.message);
-    process.exit(1);
+    if (items.length === 0) {
+        throw new Error('无法从文件中提取任何有效 JSON 对象', { cause: parseError });
+    }
 }
