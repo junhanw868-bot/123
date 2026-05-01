@@ -1,4 +1,4 @@
-//  版本1.9
+//  版本1.9r （重构版：降低认知复杂度）
 // test_filter.js - 批量测试脚本（重构降低圈复杂度与认知复杂度）
 //  新增：屏蔽/通过原因显示具体匹配规则或豁免规则、分类分支定位、关键词命中显示、
 //        HTML内容合并、debug模式、性能统计、--verbose、--show、--no-stats等
@@ -159,7 +159,7 @@ function findMatchedBranch(fullPattern, testStr) {
 function daysComputed(dateStr) { return 0; }
 function checkTimeBlocked(group, catStr) { return false; }
 
-// ------------------------ 配置加载 (计划8) ------------------------
+// ------------------------ 配置加载 ------------------------
 function loadConfig() {
     try {
         const config = require('./xbk_config.json');
@@ -191,8 +191,7 @@ const RULES = {
     pingbineirongplus: parseRules(config.pingbineirongplus)
 };
 
-// ------------------------ 表驱动字段检查 (计划2) ------------------------
-// 每个元素定义一组屏蔽规则 + 对应的豁免状态
+// ------------------------ 表驱动字段检查 ------------------------
 function fieldCheckDescriptors() {
     return [
         { field: 'louzhu', rules: RULES.pingbilouzhu,          label: '楼主屏蔽' },
@@ -204,15 +203,7 @@ function fieldCheckDescriptors() {
     ];
 }
 
-// ------------------------ 纯函数：收集字段屏蔽原因 (计划1) ------------------------
-/**
- * @param {Array} rules - 已解析的规则数组
- * @param {string|null} catStr
- * @param {string|null} targetStr
- * @param {boolean} isRetained - 该字段是否已被豁免
- * @param {string} label - 屏蔽原因类型标签
- * @returns {Array<{type: string, detail: string, hit: string}>}
- */
+// ------------------------ 纯函数：收集字段屏蔽原因 ------------------------
 function collectFieldBlockReasons(rules, catStr, targetStr, isRetained, label) {
     const reasons = [];
     if (!targetStr || isRetained || !rules || rules.length === 0) return reasons;
@@ -229,30 +220,55 @@ function collectFieldBlockReasons(rules, catStr, targetStr, isRetained, label) {
     return reasons;
 }
 
+// ------------------------ 提取的内容合并 ------------------------
+function mergeContent(item) {
+    const parts = [item.content, item.content_html].filter(v => typeof v === 'string');
+    if (parts.length === 0) return null;
+    if (parts.length === 2 && parts[0] === parts[1]) return parts[0];
+    return parts.join(' ');
+}
+
+// ------------------------ 提取的分类屏蔽检查 ------------------------
+function checkCategoryBlock(catStr) {
+    if (!catStr || !pingbifenleiReg?.test?.(catStr)) return null; // 未命中
+    const matchedBranch = findMatchedBranch(pingbifenlei, catStr);
+    const detail = matchedBranch
+        ? `命中分类分支：“${matchedBranch}”`
+        : `匹配完整分类规则：“${pingbifenlei?.substring(0, 80)}”`;
+    return { passed: false, reasons: [{ type: '分类屏蔽', detail, hit: '' }] };
+}
+
+// ------------------------ 提取的豁免原因构建 ------------------------
+function buildRetainReasons(retainMap) {
+    const reasons = [];
+    if (retainMap.louzhu.retained) reasons.push({ type: '楼主展现', detail: ruleText(retainMap.louzhu.rule), hit: '' });
+    if (retainMap.title.retained) reasons.push({ type: '标题展现', detail: ruleText(retainMap.title.rule), hit: '' });
+    if (retainMap.content.retained) reasons.push({ type: '内容展现', detail: ruleText(retainMap.content.rule), hit: '' });
+    return reasons;
+}
+
+// ------------------------ 收集所有字段屏蔽原因 ------------------------
+function collectAllBlockReasons(catStr, louzhuStr, titleStr, contentStr, retainMap) {
+    const targetMap = { louzhu: louzhuStr, title: titleStr, content: contentStr };
+    const reasons = [];
+    for (const check of fieldCheckDescriptors()) {
+        const targetStr = targetMap[check.field];
+        const isRetained = retainMap[check.field]?.retained || false;
+        reasons.push(...collectFieldBlockReasons(check.rules, catStr, targetStr, isRetained, check.label));
+    }
+    return reasons;
+}
+
 // ------------------------ 核心过滤逻辑（重构后） ------------------------
 function testItem(item) {
     const catStr = typeof item.catename === 'string' ? item.catename : null;
     const louzhuStr = typeof item.louzhu === 'string' ? item.louzhu : null;
     const titleStr = typeof item.title === 'string' ? item.title : null;
+    const contentStr = mergeContent(item);
 
-    // 合并内容字段
-    const parts = [item.content, item.content_html].filter(v => typeof v === 'string');
-    let contentStr = parts.length > 0 ? parts.join(' ') : null;
-    if (parts.length === 2 && parts[0] === parts[1]) {
-        contentStr = parts[0];
-    }
-
-    // 1. 分类屏蔽（最高优先级）
-    if (catStr && pingbifenleiReg?.test?.(catStr)) {
-        const matchedBranch = findMatchedBranch(pingbifenlei, catStr);
-        const detail = matchedBranch
-            ? `命中分类分支：“${matchedBranch}”`
-            : `匹配完整分类规则：“${pingbifenlei?.substring(0, 80)}”`;
-        return {
-            passed: false,
-            reasons: [{ type: '分类屏蔽', detail, hit: '' }]
-        };
-    }
+    // 1. 分类屏蔽（最高优先级，早返回）
+    const categoryResult = checkCategoryBlock(catStr);
+    if (categoryResult) return categoryResult;
 
     // 2. 豁免检查
     const retainMap = {
@@ -260,47 +276,33 @@ function testItem(item) {
         title: isRetainedDetail(RULES.zhanxianbiaoti, catStr, titleStr),
         content: isRetainedDetail(RULES.zhanxianneirong, catStr, contentStr)
     };
-
-    const retainReasons = [];
-    if (retainMap.louzhu.retained) retainReasons.push({ type: '楼主展现', detail: ruleText(retainMap.louzhu.rule), hit: '' });
-    if (retainMap.title.retained) retainReasons.push({ type: '标题展现', detail: ruleText(retainMap.title.rule), hit: '' });
-    if (retainMap.content.retained) retainReasons.push({ type: '内容展现', detail: ruleText(retainMap.content.rule), hit: '' });
+    const retainReasons = buildRetainReasons(retainMap);
 
     // 3. 字段屏蔽检查（表驱动）
-    const blockedReasons = [];
-    const checks = fieldCheckDescriptors();
-    for (const check of checks) {
-        const targetStr = check.field === 'louzhu' ? louzhuStr :
-                          check.field === 'title'  ? titleStr : contentStr;
-        const isRetained = retainMap[check.field]?.retained || false;
-        const reasons = collectFieldBlockReasons(check.rules, catStr, targetStr, isRetained, check.label);
-        blockedReasons.push(...reasons);
-    }
+    const blockedReasons = collectAllBlockReasons(catStr, louzhuStr, titleStr, contentStr, retainMap);
 
     // 4. 返回结构化结果
     if (blockedReasons.length > 0) {
         return { passed: false, reasons: blockedReasons };
-    } else if (retainReasons.length > 0) {
-        return { passed: true, reasons: retainReasons };
-    } else {
-        return { passed: true, reasons: [{ type: '无屏蔽规则命中', detail: '', hit: '' }] };
     }
+    if (retainReasons.length > 0) {
+        return { passed: true, reasons: retainReasons };
+    }
+    return { passed: true, reasons: [{ type: '无屏蔽规则命中', detail: '', hit: '' }] };
 }
 
-// ------------------------ 结果格式化（计划7） ------------------------
-/** 将结构化原因数组转为用于显示的字符串数组 */
+// ------------------------ 结果格式化 （与1.9相同） ------------------------
 function formatReasons(reasons) {
     return reasons.map(r => {
         if (r.type === '无屏蔽规则命中') return '无屏蔽规则命中';
         if (r.type === '分类屏蔽') return `分类屏蔽 → ${r.detail}`;
         if (r.type.includes('展现')) return `通过（豁免）→ ${r.type}：“${r.detail}”`;
-        // 普通屏蔽
         const hitPart = r.hit ? ` 命中：“${r.hit}”` : '';
         return `${r.type} → 匹配规则：“${r.detail}”${hitPart}`;
     });
 }
 
-// ------------------------ 分析汇总 (计划3) ------------------------
+// ------------------------ 分析汇总 ------------------------
 function analyzeResults(items) {
     let passCount = 0, blockCount = 0;
     const blockedItems = [];
@@ -318,7 +320,7 @@ function analyzeResults(items) {
                     index: index + 1,
                     cat: catStr,
                     title: titleStr,
-                    reasons: result.reasons   // 结构化原因
+                    reasons: result.reasons
                 });
             }
         } else {
@@ -327,21 +329,15 @@ function analyzeResults(items) {
                 index: index + 1,
                 cat: catStr,
                 title: titleStr,
-                reasons: result.reasons       // 结构化原因
+                reasons: result.reasons
             });
         }
     });
 
-    return {
-        items,           // 原始数据（备用）
-        passCount,
-        blockCount,
-        blockedItems,
-        exemptItems
-    };
+    return { items, passCount, blockCount, blockedItems, exemptItems };
 }
 
-// ------------------------ 打印辅助 (计划3、4) ------------------------
+// ------------------------ 打印辅助 ------------------------
 function shouldShow(mode, passed) {
     if (mode === 'all') return true;
     if (mode === 'passed') return passed;
@@ -371,7 +367,6 @@ function buildBlockStats(blockedItems) {
             totalRuleHits++;
             const type = reason.type;
             if (!reasonStats[type]) reasonStats[type] = {};
-            // 构建明细键（与原有格式兼容）
             const hitSuffix = reason.hit ? ` 命中：“${reason.hit}”` : '';
             const detailKey = `匹配规则：“${reason.detail}”${hitSuffix}`;
             reasonStats[type][detailKey] = (reasonStats[type][detailKey] || 0) + 1;
@@ -401,7 +396,7 @@ function printStats(summary, stats, showMode) {
     }
 }
 
-// ------------------------ 批量测试入口 (重构后) ------------------------
+// ------------------------ 批量测试入口 ------------------------
 function testBatch(items, options = {}) {
     const { verbose = false, showMode = 'blocked', noStats = false } = options;
     if (!Array.isArray(items) || items.length === 0) {
@@ -415,24 +410,24 @@ function testBatch(items, options = {}) {
 
     console.time('⏱ 批量测试耗时');
 
-    // 分析阶段
+    // 分析阶段（包含 testItem 调用）
     const summary = analyzeResults(items);
 
-    // 逐条打印（按 showMode 过滤）
+    // 逐条打印（复用 summary 中的 items）
     summary.items.forEach((item, index) => {
-        const result = testItem(item);  // 这里重复计算了一次，可优化但为保持清晰暂保留
+        // 为了打印，可直接使用 summary 中计算好的结果，避免重复调用 testItem
+        // 简单实现：重新调用 testItem（或者修改 analyzeResults 记录每个 item 的 result）
+        const result = testItem(item);
         printItemResult(item, index, result, showMode);
     });
 
     console.timeEnd('⏱ 批量测试耗时');
 
-    // 统计打印
     if (!noStats) {
         const stats = buildBlockStats(summary.blockedItems);
         printStats(summary, stats, showMode);
     }
 
-    // 详细豁免信息（仅当 --verbose 且只显示屏蔽条目时）
     if (verbose && summary.exemptItems.length > 0 && showMode === 'blocked') {
         console.log('\n豁免通过详情（verbose）:');
         summary.exemptItems.forEach(e => {
@@ -443,7 +438,7 @@ function testBatch(items, options = {}) {
     }
 }
 
-// ------------------------ 命令行解析 (计划5) ------------------------
+// ------------------------ 命令行解析 ------------------------
 function parseArgs(args) {
     const options = {
         batchFilePath: null,
