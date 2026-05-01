@@ -129,21 +129,18 @@ function isRetainedDetail(rules, catStr, targetStr) {
     return { retained: !!rule, rule };
 }
 
-// ✅ 修正点2：统一使用可选链
 function matchedText(rule, targetStr) {
     if (!rule?.valRegex || !targetStr) return '';
     const m = targetStr.match(rule.valRegex);
     return m ? m[0] : '';
 }
 
-// ✅ 已使用可选链
 function ruleText(rule) {
     if (!rule?.raw) return '?';
     const r = rule.raw;
     return r.length > 77 ? r.substring(0, 77) + '...' : r;
 }
 
-// ✅ 已使用可选链
 function findMatchedBranch(fullPattern, testStr) {
     if (!fullPattern || !testStr) return null;
     const fullReg = safeRegExp(fullPattern, 'i');
@@ -224,7 +221,6 @@ function mergeContent(item) {
     return parts.join(' ');
 }
 
-// ✅ 修正点1：去掉多余的 ?.
 function checkCategoryBlock(catStr) {
     if (!catStr || !pingbifenleiReg?.test(catStr)) return null;
     const matchedBranch = findMatchedBranch(pingbifenlei, catStr);
@@ -289,11 +285,10 @@ function analyzeResults(items) {
     let passCount = 0, blockCount = 0;
     const blockedItems = [], exemptItems = [];
 
-    items.forEach((item, index) => {
+    const results = items.map((item, index) => {
         const catStr = item.catename ?? '(无)';
         const titleStr = (item.title ?? '(无)').substring(0, 40);
         const result = testItem(item);
-
         if (result.passed) {
             passCount++;
             if (result.reasons.some(r => r.type.includes('展现'))) {
@@ -303,9 +298,10 @@ function analyzeResults(items) {
             blockCount++;
             blockedItems.push({ index: index + 1, cat: catStr, title: titleStr, reasons: result.reasons });
         }
+        return { item, index, result };
     });
 
-    return { items, passCount, blockCount, blockedItems, exemptItems };
+    return { items: results, passCount, blockCount, blockedItems, exemptItems };
 }
 
 function shouldShow(mode, passed) {
@@ -375,7 +371,7 @@ function testBatch(items, options = {}) {
     console.time('⏱ 批量测试耗时');
     const summary = analyzeResults(items);
 
-    summary.items.forEach((item, index) => printItemResult(item, index, testItem(item), showMode));
+    summary.items.forEach(({ item, index, result }) => printItemResult(item, index, result, showMode));
 
     console.timeEnd('⏱ 批量测试耗时');
 
@@ -432,13 +428,14 @@ if (!options.batchFilePath) {
     process.exit(1);
 }
 
+// ------------------------ 文件读取与容错解析 ------------------------
 try {
     const rawData = fs.readFileSync(options.batchFilePath, 'utf-8');
     let items;
     try {
         items = JSON.parse(rawData);
     } catch (parseError) {
-        console.warn('⚠️ JSON 解析失败，尝试按行分拆对象修复...');
+        console.warn(`⚠️ JSON 解析失败，尝试按行分拆对象修复... （原因：${parseError.message}）`);
         const lines = rawData.split(/\r?\n/).filter(line => line.trim());
         items = [];
         let buffer = '';
@@ -451,31 +448,20 @@ try {
             buffer += line;
             if (braceCount === 0 && buffer.trim()) {
                 try {
-    items = JSON.parse(rawData);
-} catch (parseError) {
-    console.warn('⚠️ JSON 解析失败，尝试按行分拆对象修复...');
-    console.warn(`   原因：${parseError.message}`);
-    
-    const lines = rawData.split(/\r?\n/).filter(line => line.trim());
-    items = [];
-    let buffer = '';
-    let braceCount = 0;
-    for (const line of lines) {
-        for (const ch of line) {
-            if (ch === '{') braceCount++;
-            else if (ch === '}') braceCount--;
-        }
-        buffer += line;
-        if (braceCount === 0 && buffer.trim()) {
-            try {
-                items.push(JSON.parse(buffer));
-            } catch (e) {
-                console.error('无法解析的对象:', buffer.substring(0, 100), e.message);
+                    items.push(JSON.parse(buffer));
+                } catch (e) {
+                    console.error('无法解析的对象:', buffer.substring(0, 100), e.message);
+                }
+                buffer = '';
             }
-            buffer = '';
+        }
+        if (items.length === 0) {
+            throw new Error('无法从文件中提取任何有效 JSON 对象', { cause: parseError });
         }
     }
-    if (items.length === 0) {
-        throw new Error('无法从文件中提取任何有效 JSON 对象', { cause: parseError });
-    }
+
+    testBatch(items, options);
+} catch (err) {
+    console.error('❌ 读取或处理文件时出错:', err.message);
+    process.exit(1);
 }
